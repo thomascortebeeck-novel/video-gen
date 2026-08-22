@@ -638,8 +638,8 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
     if (missing.length > 0 && !videoMock) {
       throw new HttpsError('failed-precondition', `Missing reference assets: ${missing.join('; ')}. Generate them on the briefing page first.`);
     }
-    const refs = retag(rawRefs);
-    const prompt = buildScenePrompt(scene, subjects, refs);
+    let refs = retag(rawRefs);
+    let prompt = buildScenePrompt(scene, subjects, refs);
     await sceneRef.set({ assembledPrompt: prompt, updatedAt: now() }, { merge: true });
 
     const wantsAudio = caps.nativeAudio && (
@@ -686,26 +686,76 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
     }
 
     // --- Submit + poll (provider-agnostic) ---
+    // ModelArk runs a privacy filter over the input images BEFORE reading the
+    // prompt: portrait-style face crops are rejected as "may contain real
+    // person" even when the face is AI-generated (verified 2026-08-22 —
+    // full-body refs of the same character pass). The error names the
+    // offending content[i] slots, so we drop exactly those refs, rebuild the
+    // prompt (tag numbering stays dense) and resubmit.
     const provider = videoProviderFor(caps);
-    const enginePrompt = caps.id === 'seedance1' ? buildV1MotionPrompt(scene) : prompt;
-    const jobId = await provider.submitVideo({
-      prompt: enginePrompt,
-      durationSec: scene.durationSec,
-      aspectRatio: project.input.aspectRatio,
-      resolution: project.input.resolution,
-      generateAudio: Boolean(wantsAudio),
-      imageRefUrls: refs.filter((r) => r.media === 'image' && r.url).map((r) => r.url!),
-      audioRefUrls: refs.filter((r) => r.media === 'audio' && r.url).map((r) => r.url!),
-      startImageUrl,
-      extendVideoUrl,
-    });
-    await setGen({ status: 'queued', jobId, provider: provider.name });
+    const droppedRefs: string[] = [];
+    let jobId = '';
+    for (let attempt = 0; ; attempt++) {
+      const enginePrompt = caps.id === 'seedance1' ? buildV1MotionPrompt(scene) : prompt;
+      try {
+        jobId = await provider.submitVideo({
+          prompt: enginePrompt,
+          durationSec: scene.durationSec,
+          aspectRatio: project.input.aspectRatio,
+          resolution: project.input.resolution,
+          generateAudio: Boolean(wantsAudio),
+          imageRefUrls: refs.filter((r) => r.media === 'image' && r.url).map((r) => r.url!),
+          audioRefUrls: refs.filter((r) => r.media === 'audio' && r.url).map((r) => r.url!),
+          startImageUrl,
+          extendVideoUrl,
+        });
+        break;
+      } catch (e) {
+        const msg = String((e as Error).message ?? e);
+        const flagged = [...msg.matchAll(/content\[(\d+)\]/g)].map((m) => Number(m[1]));
+        const recoverable = provider.name === 'ark'
+          && msg.includes('InputImageSensitiveContentDetected')
+          && flagged.length > 0 && attempt < 3;
+        if (!recoverable) throw e;
+        // Map content[] slots back to image refs: content[0] is the text
+        // block; in extension mode content[1] is the reference video.
+        const slotOffset = extendVideoUrl ? 2 : 1;
+        const imageRefs = refs.filter((r) => r.media === 'image' && r.url);
+        const toDrop = new Set(flagged.map((i) => imageRefs[i - slotOffset]).filter(Boolean));
+        const keep = refs.filter((r) => !toDrop.has(r));
+        const usableLeft = keep.some((r) => r.media === 'image' && r.kind !== 'bridge_frame');
+        if (toDrop.size === 0 || !usableLeft) {
+          throw new Error(
+            `ModelArk's privacy filter rejected the reference images for "${scene.title}" — it treats `
+            + 'realistic faces (even AI-generated ones) as real-person photos, and no usable references '
+            + `remain after dropping the flagged ones. Original error: ${msg}`,
+          );
+        }
+        for (const r of toDrop) {
+          droppedRefs.push(
+            r.kind === 'subject_angle' ? `${r.subjectId} ${r.angleId}`
+              : r.kind === 'environment' ? `environment ${r.envId}`
+                : r.kind,
+          );
+        }
+        refs = retag(keep);
+        prompt = buildScenePrompt(scene, subjects, refs);
+        await sceneRef.set({ assembledPrompt: prompt, updatedAt: now() }, { merge: true });
+        await setProgress(uid, projectId, 'scene',
+          `${scene.title}: ModelArk's privacy filter flagged ${toDrop.size} reference image(s) — retrying without ${droppedRefs.join(', ')}…`);
+      }
+    }
+    const moderationNote = droppedRefs.length > 0
+      ? `ModelArk's privacy filter rejected ${droppedRefs.join(', ')} as possible real-person photos — `
+        + 'the scene was generated without them (identity rides on the remaining references).'
+      : undefined;
+    await setGen({ status: 'queued', jobId, provider: provider.name, ...(moderationNote ? { moderationNote } : {}) });
     await setProgress(uid, projectId, 'scene', `${scene.title}: video generating on ${provider.name} (this can take several minutes)…`);
 
     const finalStatus = await waitForVideo(provider, jobId, {
       maxMs: 25 * 60 * 1000,
       onTick: async (s) => {
-        if (s.state === 'generating') await setGen({ status: 'generating', jobId, provider: provider.name });
+        if (s.state === 'generating') await setGen({ status: 'generating', jobId, provider: provider.name, ...(moderationNote ? { moderationNote } : {}) });
       },
     });
     if (finalStatus.state !== 'completed' || !finalStatus.videoUrl) {
@@ -719,6 +769,7 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
       versions: [...(scene.versions ?? []), { videoPath: outPath, createdAt: now() }],
       generation: {
         status: 'completed', jobId, provider: provider.name, completedAt: now(), resultUrl: finalStatus.videoUrl,
+        ...(moderationNote ? { moderationNote } : {}),
         params: { model: caps.label, durationSec: scene.durationSec, aspectRatio: project.input.aspectRatio, resolution: project.input.resolution },
       },
       updatedAt: now(),

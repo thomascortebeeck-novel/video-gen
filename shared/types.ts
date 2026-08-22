@@ -35,6 +35,10 @@ export interface GenerationInfo {
   completedAt?: number;
   /** provider result URL (temporary); the durable copy lives at `path` */
   resultUrl?: string;
+  /** set when the provider's content filter rejected some reference images
+   *  and the job was retried without them (e.g. ModelArk flags face
+   *  close-ups as "may contain real person", even AI-generated ones) */
+  moderationNote?: string;
 }
 
 // ---------------------------------------------------------------------------

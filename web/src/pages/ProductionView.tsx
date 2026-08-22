@@ -81,6 +81,11 @@ export default function ProductionView({ project, scenes }: Props) {
                 </div>
                 <p className="mt-1 text-xs text-zinc-500">{scene.beatSummary}</p>
                 <ErrorNote error={scene.generation.status === 'failed' ? scene.generation.error : undefined} />
+                {scene.generation.moderationNote && (
+                  <p className="mt-2 rounded-lg border border-amber-900/60 bg-amber-950/30 p-2 text-xs text-amber-200/90">
+                    {scene.generation.moderationNote}
+                  </p>
+                )}
                 <div className="mt-3 flex flex-wrap items-start gap-4">
                   {scene.stitching.bridgeFramePath && (
                     <div className="w-40">
