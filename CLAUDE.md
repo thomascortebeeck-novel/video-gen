@@ -14,7 +14,7 @@ Seedance 2.5 scenes → ffmpeg assembly). Full product docs in [README.md](READM
 ## Engine system (functions/src/config.ts)
 
 - Video `auto` order: Higgsfield Seedance 2.5 (needs `SEEDANCE25_PATH`, still unreleased) → **BytePlus ModelArk** (`ARK_API_KEY`, active today) → fal.ai (`FAL_KEY`) → Higgsfield v1 keyframe → mock. Force with `VIDEO_ENGINE` in `functions/.env`.
-- Images (`activeImageProvider`): Higgsfield nano-banana → **ModelArk Seedream 5.0 Pro** (same ARK key, active today) → mock.
+- Images (`activeImageProvider`, forceable via `IMAGE_ENGINE`): **OpenAI GPT Image 2** (`OPENAI_API_KEY`, active today) → Higgsfield nano-banana → ModelArk Seedream 5.0 Pro (same ARK key) → mock. Adapter: `openai_image.ts`.
 - Providers implement `VideoProvider` (functions/src/providers.ts); adapters: `ark.ts`, `fal.ts`, `higgsfield.ts`. Prompt assembly is deterministic in **shared/assemble.ts** (Dan Kieft advanced template) — the web UI renders live previews from the same code.
 
 ## Hard-won provider facts (do not rediscover)
@@ -24,6 +24,7 @@ Seedance 2.5 scenes → ffmpeg assembly). Full product docs in [README.md](READM
 - **Reference tags**: internal format is lowercase `@image1` (Dan Kieft); adapters normalize on the wire — `@Image 1` for ModelArk, `@Image1` for fal. **Binding is by attachment order per modality** (Nth image = @Image N) — tags and URLs are built from one ordered list, so they cannot drift.
 - **ModelArk privacy filter** (verified by probe 2026-08-22): Seedance *video* create-task rejects reference images with realistic faces — `InputImageSensitiveContentDetected.PrivacyInformation`, listing offending `content[i]` slots — **even for AI-generated faces**. Face close-ups (cu_*) fail; full-body angles of the same character pass; Seedream *image* gen accepts the same faces fine. The filter runs before the prompt is read (prompt disclaimers useless). `runGenerateScene` auto-recovers: drops exactly the flagged refs, rebuilds prompt (dense retagging), resubmits (≤3 tries), stores `generation.moderationNote`. Rejected creates bill nothing; running tasks cannot be cancelled (DELETE → 409, only `queued` can).
 - **fal.ai**: queue API `queue.fal.run/bytedance/seedance-2.5/{variant}`; `duration` is a STRING enum ("4".."30"|"auto"); no seed input; r2v supports `audio_urls` (voice refs) and `video_urls` (extension via continuation prompt); results expire ~1h.
+- **GPT Image 2** (`gpt-image-2`, verified 2026-08-23): sync `POST /images/generations` (JSON) or `/images/edits` (multipart, refs as `image[]` parts in order, ≤16) → `data[0].b64_json`. Needs OpenAI **Organization Verification** (done). Arbitrary sizes (edges ×16, ≤3840, ratio ≤3:1) — we use 1152x1536 for 3:4. Accepts face refs (identity edits are its strength); input fidelity always high, no param. Token-billed: quality high ≈ 4× medium (`OPENAI_IMAGE_QUALITY`, default high ≈ $0.36 @1152×1536, medium ≈ $0.09). Prompts rewrite `@imageN` → "reference image N". Up to ~2 min/image; CONCURRENCY=2.
 - **Costs** (720p): video ≈ $0.231/s on ModelArk (tokens = W×H×s×24/1024 × $10.70/M); 480p ≈ $0.10/s, 1080p ≈ $0.41/s. Seedream images ≈ $0.05–0.09 each. Only successful generations bill.
 
 ## GCP org quirks (aiwebatelier.com org)

@@ -21,6 +21,7 @@ import {
 } from './higgsfield';
 import { falVideoProvider } from './fal';
 import { arkVideoProvider, arkGenerateImage } from './ark';
+import { openaiGenerateImage } from './openai_image';
 import { waitForVideo, downloadUrl, VideoProvider } from './providers';
 import { elevenLabsConfigured, designVoice, textToSpeech } from './elevenlabs';
 import {
@@ -337,6 +338,12 @@ async function generateOneImage(opts: {
   }
   const refUrls: string[] = [];
   for (const p of opts.refPaths.slice(0, MAX_IMAGE_REFS)) refUrls.push(await publicUrl(p));
+  if (provider === 'openai') {
+    // GPT Image 2 — best identity edits and in-image text rendering.
+    const buf = await openaiGenerateImage({ prompt: opts.prompt, refUrls, aspectRatio: opts.aspectRatio });
+    await saveBuffer(opts.outPath, buf, 'image/png');
+    return;
+  }
   if (provider === 'ark') {
     // Seedream 5.0 Pro — synchronous, same ARK key as video generation.
     const buf = await arkGenerateImage({ prompt: opts.prompt, refUrls, aspectRatio: opts.aspectRatio });
@@ -396,8 +403,10 @@ export async function runGenerateAngles(uid: string, projectId: string, subjectI
     let done = angles.filter((a) => a.generation.status === 'completed').length;
 
     // Higgsfield tolerates a few parallel jobs; ModelArk's image endpoint
-    // rate-limits fresh accounts hard — go sequential there.
-    const CONCURRENCY = activeImageProvider() === 'ark' ? 1 : 3;
+    // rate-limits fresh accounts hard — go sequential there. OpenAI sits in
+    // between (per-org image rate limits, images take up to ~2 min each).
+    const imgProvider = activeImageProvider();
+    const CONCURRENCY = imgProvider === 'ark' ? 1 : imgProvider === 'openai' ? 2 : 3;
     const queue = [...rest];
     const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
       for (;;) {

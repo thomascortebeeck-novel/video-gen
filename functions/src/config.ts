@@ -19,6 +19,8 @@ export const ELEVENLABS_API_KEY = defineSecret('ELEVENLABS_API_KEY');
 export const FAL_KEY = defineSecret('FAL_KEY');
 /** BytePlus ModelArk key — ByteDance's official Seedance 2.5 API (cheapest). */
 export const ARK_API_KEY = defineSecret('ARK_API_KEY');
+/** OpenAI key — GPT Image 2 for image generation (angles/environments). */
+export const OPENAI_API_KEY = defineSecret('OPENAI_API_KEY');
 
 export const ALL_SECRETS = [
   HIGGSFIELD_API_KEY,
@@ -27,6 +29,7 @@ export const ALL_SECRETS = [
   ELEVENLABS_API_KEY,
   FAL_KEY,
   ARK_API_KEY,
+  OPENAI_API_KEY,
 ];
 
 /**
@@ -153,15 +156,36 @@ export function arkConfigured(): boolean {
   return Boolean(secretOrEmpty(ARK_API_KEY));
 }
 
-export type ImageProviderName = 'higgsfield' | 'ark' | 'mock';
+export function openaiConfigured(): boolean {
+  return Boolean(secretOrEmpty(OPENAI_API_KEY));
+}
+
+export type ImageProviderName = 'openai' | 'higgsfield' | 'ark' | 'mock';
+
+/**
+ * Image engine preference (video stays on VIDEO_ENGINE):
+ *  - auto → GPT Image 2 → Higgsfield nano-banana → Seedream 5.0 Pro → mock
+ *  - openai | higgsfield | ark | mock → force (falls back to auto order
+ *    when the forced provider isn't configured)
+ */
+export const IMAGE_ENGINE = defineString('IMAGE_ENGINE', { default: 'auto' });
+/** GPT Image 2 quality: low | medium | high (high ≈ 4× medium cost). */
+export const OPENAI_IMAGE_QUALITY = defineString('OPENAI_IMAGE_QUALITY', { default: 'high' });
 
 /**
  * Image generation (angles, environments, keyframes):
- * Higgsfield nano-banana when configured, else BytePlus Seedream 5.0 Pro
- * (same ARK key as video), else mock.
+ * OpenAI GPT Image 2 when configured (best instruction-following, identity
+ * edits and in-image text), else Higgsfield nano-banana, else BytePlus
+ * Seedream 5.0 Pro (same ARK key as video), else mock.
  */
 export function activeImageProvider(): ImageProviderName {
   if (isForcedMock()) return 'mock';
+  const pref = IMAGE_ENGINE.value().trim();
+  if (pref === 'openai' && openaiConfigured()) return 'openai';
+  if (pref === 'higgsfield' && higgsfieldConfigured()) return 'higgsfield';
+  if (pref === 'ark' && arkConfigured()) return 'ark';
+  if (pref === 'mock') return 'mock';
+  if (openaiConfigured()) return 'openai';
   if (higgsfieldConfigured()) return 'higgsfield';
   if (arkConfigured()) return 'ark';
   return 'mock';
