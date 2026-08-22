@@ -1,0 +1,16 @@
+{
+  "name": "video-generator",
+  "private": true,
+  "scripts": {
+    "build": "npm --prefix functions run build && npm --prefix web run build",
+    "emulators": "firebase emulators:start",
+    "dev:web": "npm --prefix web run dev",
+    "deploy": "npm run build && firebase deploy",
+    "deploy:functions": "firebase deploy --only functions",
+    "deploy:hosting": "npm --prefix web run build && firebase deploy --only hosting",
+    "deploy:rules": "firebase deploy --only firestore:rules,storage"
+  },
+  "devDependencies": {
+    "firebase-tools": "^14.0.0"
+  }
+}

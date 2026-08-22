@@ -1,0 +1,20 @@
+node_modules/
+dist/
+lib/
+.env
+.env.*
+!.env.example
+# functions/.env holds non-secret runtime params (engine selection) — safe to commit
+!functions/.env
+*.local
+# Third-party prompting guides (Dan Kieft) — see README "Prompting sources" for the original links
+docs/reference/
+.DS_Store
+firebase-debug.log
+firebase-debug.*.log
+firestore-debug.log
+ui-debug.log
+pubsub-debug.log
+storage-debug.log
+.firebase/
+emulator-data/

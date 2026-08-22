@@ -1,0 +1,12 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // All app data lives under users/{uid}. A signed-in user may read and
+    // write only their own tree. Cloud Functions use the Admin SDK and
+    // bypass these rules.
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
