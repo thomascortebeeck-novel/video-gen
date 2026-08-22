@@ -40,7 +40,7 @@ export default function NewProject() {
   const patchSubject = (key: number, patch: Partial<DraftSubject>) =>
     setSubjects((ss) => ss.map((s) => (s.key === key ? { ...s, ...patch } : s)));
 
-  const canSubmit = concept.trim().length > 5
+  const canSubmit = concept.trim().length >= 3
     && subjects.every((s) => s.name.trim().length > 0)
     && subjects.some((s) => s.files.length > 0 || s.kind === 'character');
 
