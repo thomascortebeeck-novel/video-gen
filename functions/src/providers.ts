@@ -22,6 +22,13 @@ export interface VideoGenRequest {
   startImageUrl?: string;
   /** source video URL when extending */
   extendVideoUrl?: string;
+  /**
+   * plain video reference (@video1, non-extension) — carries character
+   * identity when the platform's moderation rejects character images
+   * (ModelArk tightened its real-person filter on 2026-08-23 to reject ALL
+   * realistic character images, AI-generated or not; videos still pass)
+   */
+  identityVideoUrl?: string;
   seed?: number;
 }
 

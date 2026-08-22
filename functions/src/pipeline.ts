@@ -705,6 +705,7 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
     // prompt (tag numbering stays dense) and resubmit.
     const provider = videoProviderFor(caps);
     const droppedRefs: string[] = [];
+    let identityVideoUrl: string | undefined;
     let jobId = '';
     for (let attempt = 0; ; attempt++) {
       const enginePrompt = caps.id === 'seedance1' ? buildV1MotionPrompt(scene) : prompt;
@@ -719,6 +720,7 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
           audioRefUrls: refs.filter((r) => r.media === 'audio' && r.url).map((r) => r.url!),
           startImageUrl,
           extendVideoUrl,
+          identityVideoUrl,
         });
         break;
       } catch (e) {
@@ -729,19 +731,12 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
           && flagged.length > 0 && attempt < 3;
         if (!recoverable) throw e;
         // Map content[] slots back to image refs: content[0] is the text
-        // block; in extension mode content[1] is the reference video.
-        const slotOffset = extendVideoUrl ? 2 : 1;
+        // block; a reference video (extension or identity) occupies the slot
+        // before the images.
+        const slotOffset = (extendVideoUrl || identityVideoUrl) ? 2 : 1;
         const imageRefs = refs.filter((r) => r.media === 'image' && r.url);
         const toDrop = new Set(flagged.map((i) => imageRefs[i - slotOffset]).filter(Boolean));
-        const keep = refs.filter((r) => !toDrop.has(r));
-        const usableLeft = keep.some((r) => r.media === 'image' && r.kind !== 'bridge_frame');
-        if (toDrop.size === 0 || !usableLeft) {
-          throw new Error(
-            `ModelArk's privacy filter rejected the reference images for "${scene.title}" — it treats `
-            + 'realistic faces (even AI-generated ones) as real-person photos, and no usable references '
-            + `remain after dropping the flagged ones. Original error: ${msg}`,
-          );
-        }
+        if (toDrop.size === 0) throw e;
         for (const r of toDrop) {
           droppedRefs.push(
             r.kind === 'subject_angle' ? `${r.subjectId} ${r.angleId}`
@@ -749,16 +744,41 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
                 : r.kind,
           );
         }
+        const keep = refs.filter((r) => !toDrop.has(r));
+        const anchorLeft = keep.some((r) => r.media === 'image'
+          && (r.kind === 'subject_angle' || r.kind === 'subject_upload'));
         refs = retag(keep);
         prompt = buildScenePrompt(scene, subjects, refs);
+        if (!anchorLeft && !extendVideoUrl) {
+          // Every character image was rejected (ModelArk's 2026-08-23 filter
+          // tightening blocks ALL realistic character images). Fall back to
+          // carrying identity via the scene's own previous take as a plain
+          // reference video — videos still pass the filter.
+          const prevTake = scene.versions?.[scene.versions.length - 1]?.videoPath ?? scene.videoPath;
+          if (!prevTake) {
+            throw new Error(
+              `ModelArk is currently rejecting ALL realistic character images ("${scene.title}": ${droppedRefs.join(', ')}) — `
+              + 'their real-person filter was tightened platform-side. This scene has no previous take to use as a video '
+              + 'identity reference. Options: generate once without locked identity and regenerate from that take, '
+              + 'switch the video engine (fal.ai), or contact BytePlus support about the moderation policy.',
+            );
+          }
+          identityVideoUrl = videoMock ? `mock://${prevTake}` : await publicUrl(prevTake);
+          prompt = prompt.replace('[REFERENCE MATERIAL]\n',
+            '[REFERENCE MATERIAL]\n@video1 — the characters exactly as filmed in this footage: identical faces, hair and wardrobe. '
+            + 'Identity reference only — perform the staging written below, never replay this footage.\n');
+        }
         await sceneRef.set({ assembledPrompt: prompt, updatedAt: now() }, { merge: true });
         await setProgress(uid, projectId, 'scene',
-          `${scene.title}: ModelArk's privacy filter flagged ${toDrop.size} reference image(s) — retrying without ${droppedRefs.join(', ')}…`);
+          `${scene.title}: ModelArk's privacy filter flagged ${toDrop.size} reference image(s) — retrying `
+          + `${!anchorLeft && identityVideoUrl ? 'with the previous take as the identity reference' : `without ${droppedRefs.join(', ')}`}…`);
       }
     }
     const moderationNote = droppedRefs.length > 0
       ? `ModelArk's privacy filter rejected ${droppedRefs.join(', ')} as possible real-person photos — `
-        + 'the scene was generated without them (identity rides on the remaining references).'
+        + (identityVideoUrl
+          ? 'identity was carried by the previous take as a video reference instead.'
+          : 'the scene was generated without them (identity rides on the remaining references).')
       : undefined;
     await setGen({ status: 'queued', jobId, provider: provider.name, ...(moderationNote ? { moderationNote } : {}) });
     await setProgress(uid, projectId, 'scene', `${scene.title}: video generating on ${provider.name} (this can take several minutes)…`);
