@@ -164,6 +164,7 @@ function mockPlan(project: ProjectDoc, subjects: SubjectDoc[]): BriefingPlan {
       key: 'main_location', name: where,
       description: `${where} — believable materials, depth, and a clear light direction.`,
       refPrompt: 'Wide establishing view, eye level, natural perspective.',
+      type: 'location' as const,
     }],
     scenes: Array.from({ length: nScenes }, (_, i) => {
       const dur = i === nScenes - 1 ? Math.max(caps.minClipSeconds, total - per * (nScenes - 1)) : per;
@@ -236,6 +237,7 @@ export async function runPlanBriefing(uid: string, projectId: string): Promise<v
     for (const env of plan.environments) {
       const doc: EnvironmentDoc = {
         id: env.key, name: env.name, description: env.description, refPrompt: env.refPrompt,
+        type: env.type ?? 'location',
         generation: { status: 'idle' }, createdAt: now(), updatedAt: now(),
       };
       await envCol.doc(env.key).set(doc);

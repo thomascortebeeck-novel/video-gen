@@ -128,6 +128,17 @@ export function buildAnglePrompt(subject: SubjectDoc, angle: SubjectAngle, inclu
 // ---------------------------------------------------------------------------
 
 export function buildEnvironmentPrompt(env: EnvironmentDoc, briefing: Briefing | undefined): string {
+  if (env.type === 'insert_card') {
+    // Full-frame graphic with exact text — video models copy attached text
+    // far more faithfully than they invent it.
+    return [
+      `A flat, full-frame insert graphic, filling the entire frame edge to edge: ${env.name}.`,
+      env.description,
+      env.refPrompt,
+      'Render every piece of text EXACTLY as written above — letter for letter, correct spelling, no invented words, no additional text anywhere.',
+      'Crisp, perfectly legible type; clean vector-sharp rendering; no people, no watermark.',
+    ].join('\n');
+  }
   const style = briefing?.styleBible;
   const lines = [
     `A single wide establishing photograph of ${env.name}, completely empty of people.`,

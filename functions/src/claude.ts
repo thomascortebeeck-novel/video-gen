@@ -207,10 +207,12 @@ const BriefingPlanSchema = z.object({
     voice: VoiceSpecSchema,
   })),
   environments: z.array(z.object({
-    key: z.string().describe('short slug, e.g. "gym", "alley_night"'),
+    key: z.string().describe('short slug, e.g. "gym", "alley_night", "card_message1"'),
     name: z.string(),
     description: z.string(),
     refPrompt: z.string(),
+    type: z.enum(['location', 'insert_card'])
+      .describe('"location" = establishing shot of a place; "insert_card" = flat full-frame graphic carrying EXACT on-screen text (phone messages, menus, signs)'),
   })),
   scenes: z.array(SceneSchema),
   stitchingPlan: z.object({
@@ -271,8 +273,9 @@ const directorSystem = (caps: EngineCaps) => `You are a professional film direct
 - Choose angle images matching the scene's framing: full-body angles for wide/action scenes, face close-ups for dialogue/emotion scenes, back/rear-three-quarter when the camera is behind. 2-4 angles per main subject on screen, 1-2 for secondary.
 - Every reference gets: use (what to take, naming the role and the view) and ignore (what to leave — always exclude photo backgrounds).
 - Products: reference the angle set and state all images are the same single object.
-- Add the scene's environment reference (kind "environment") so location holds across scenes; define each distinct location once in environments[].
+- Add the scene's environment reference (kind "environment") so location holds across scenes; define each distinct location once in environments[] with type "location".
 - environments[].refPrompt: a wide establishing image prompt for that location, empty of people, describing space, materials, and how the light behaves, in the film's palette.
+- ON-SCREEN TEXT: video models cannot spell reliably. Whenever the story shows text that must read EXACTLY (a phone message, chat bubble, sign, menu, scoreboard, title card), plan an environments[] entry with type "insert_card" UPFRONT — one card per distinct screen. Put the EXACT text in quotes in the description, and use refPrompt for the layout/design (UI chrome, brand colours, type hierarchy). The scene that shows it must add the card as a reference (kind "environment") with use: "reproduce this screen exactly — never respell, redraw or reflow its text", and the stage action names the card's tag at the moment it fills the frame.
 
 == AUDIO ==
 - audio field format: "(music description, when it drops out) <effect> <effect at its moment> Ambience: ... Subtitles: on/off." Write "no music" explicitly for silent scenes; state the mix hierarchy (dialogue clean and prominent, music low, ambience subtle).

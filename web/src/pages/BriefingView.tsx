@@ -59,7 +59,10 @@ export default function BriefingView({ uid, project, subjects, scenes, environme
               <div key={env.id} className="card p-3">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <h3 className="text-sm font-medium text-zinc-200">{env.name}</h3>
-                  <StatusChip status={env.generation.status} />
+                  <div className="flex items-center gap-1.5">
+                    {env.type === 'insert_card' && <span className="chip bg-violet-950/60 text-violet-300">insert card</span>}
+                    <StatusChip status={env.generation.status} />
+                  </div>
                 </div>
                 <StorageImg path={env.imagePath} alt={env.name} className="aspect-video w-full rounded-lg object-cover" />
                 <Field label="Description" rows={2} value={env.description}

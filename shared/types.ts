@@ -162,6 +162,13 @@ export interface EnvironmentDoc {
   description: string;
   /** Image prompt used to generate the reference */
   refPrompt: string;
+  /**
+   * 'location' (default): a wide establishing shot of a place.
+   * 'insert_card': a flat full-frame graphic with EXACT on-screen text
+   * (phone messages, menus, signs) — generated upfront so video scenes can
+   * reproduce the text pixel-faithfully instead of inventing it.
+   */
+  type?: 'location' | 'insert_card';
   generation: GenerationInfo;
   imagePath?: string;
   createdAt: number;
