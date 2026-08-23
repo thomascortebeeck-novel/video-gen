@@ -319,6 +319,9 @@ export interface ProjectInput {
   aspectRatio: AspectRatio;
   resolution: Resolution;
 
+  /** preferred video engine for this project; 'auto' (default) = best available */
+  videoEngine?: 'auto' | 'ark25' | 'fal25' | 'seedance25' | 'seedance1';
+
   /** e.g. "cinematic", "ugc_handheld", "camcorder_2000s", "documentary", "commercial" */
   stylePreset?: string;
   styleNotes?: string;

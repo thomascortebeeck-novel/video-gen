@@ -29,6 +29,7 @@ export default function NewProject() {
   const [durationSec, setDurationSec] = useState(30);
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
   const [resolution, setResolution] = useState<Resolution>('720p');
+  const [videoEngine, setVideoEngine] = useState<NonNullable<ProjectInput['videoEngine']>>('auto');
   const [stylePreset, setStylePreset] = useState('cinematic');
   const [styleNotes, setStyleNotes] = useState('');
   const [dialogueEnabled, setDialogueEnabled] = useState(true);
@@ -50,7 +51,7 @@ export default function NewProject() {
     try {
       const input: ProjectInput = {
         concept, who, what, where, when, extraNotes,
-        durationSec, aspectRatio, resolution, stylePreset, styleNotes,
+        durationSec, aspectRatio, resolution, videoEngine, stylePreset, styleNotes,
         dialogueEnabled, dialogueNotes,
         audio,
       };
@@ -176,6 +177,18 @@ export default function NewProject() {
               <option>480p</option><option>720p</option><option>1080p</option>
             </select>
           </div>
+        </div>
+        <div className="mt-4">
+          <label className="label">Video engine</label>
+          <select className="input" value={videoEngine} onChange={(e) => setVideoEngine(e.target.value as NonNullable<ProjectInput['videoEngine']>)}>
+            <option value="auto">Auto — best available (recommended)</option>
+            <option value="ark25">Seedance 2.5 — BytePlus ModelArk (official, cheapest)</option>
+            <option value="fal25">Seedance 2.5 — fal.ai</option>
+          </select>
+          <p className="mt-1 text-[11px] text-zinc-600">
+            Note: all Seedance 2.5 APIs currently reject reference images of people — character identity is
+            carried by generated footage (extends and video references) instead of the angle sheets.
+          </p>
         </div>
         <div className="mt-4">
           <label className="label">Style</label>

@@ -121,7 +121,7 @@ export async function runAnalyzeSubjects(uid: string, projectId: string): Promis
 // ---------------------------------------------------------------------------
 
 function mockPlan(project: ProjectDoc, subjects: SubjectDoc[]): BriefingPlan {
-  const caps = activeEngine();
+  const caps = activeEngine(project.input.videoEngine);
   const total = project.input.durationSec;
   const nScenes = Math.max(1, Math.ceil(total / caps.maxClipSeconds));
   const per = Math.max(caps.minClipSeconds, Math.min(caps.maxClipSeconds, Math.round(total / nScenes)));
@@ -210,7 +210,7 @@ export async function runPlanBriefing(uid: string, projectId: string): Promise<v
   if (notReady.length > 0) {
     throw new HttpsError('failed-precondition', `Analyze subjects first (${notReady.map((s) => s.name).join(', ')}).`);
   }
-  const caps = activeEngine();
+  const caps = activeEngine(project.input.videoEngine);
   await projectRef(uid, projectId).set({ status: 'briefing_generating', error: null, updatedAt: now() }, { merge: true });
   await setProgress(uid, projectId, 'briefing', 'The director is planning your film: style bible, scenes, camera, audio and stitching…');
 
@@ -605,7 +605,7 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
   if (!scene) throw new HttpsError('not-found', `Scene ${sceneId} not found.`);
   const subjects = await getSubjects(uid, projectId);
   const environments = await getEnvironments(uid, projectId);
-  const caps = activeEngine();
+  const caps = activeEngine(project.input.videoEngine);
   const sceneRef = db.collection(collections.scenes(uid, projectId)).doc(sceneId);
 
   const setGen = async (patch: Partial<SceneDoc['generation']> & Record<string, unknown>) => {
@@ -825,7 +825,7 @@ export async function runRefreshScene(uid: string, projectId: string, sceneId: s
     ? falVideoProvider()
     : scene.generation.provider === 'ark'
       ? arkVideoProvider()
-      : higgsfieldVideoProvider(activeEngine());
+      : higgsfieldVideoProvider(activeEngine(project.input.videoEngine));
   const status = await provider.videoStatus(jobId);
   if (status.state === 'completed' && status.videoUrl) {
     let video = await downloadUrl(status.videoUrl);

@@ -201,9 +201,14 @@ export function activeImageProvider(): ImageProviderName {
  *      Higgsfield 2.5 (when its REST path ships) → ModelArk 2.5 (official,
  *      cheapest) → fal.ai 2.5 → Higgsfield v1 → mock
  */
-export function activeEngine(): EngineCaps {
+/**
+ * @param prefOverride per-project engine preference (ProjectInput.videoEngine);
+ * falls back to the deployment-wide VIDEO_ENGINE param when empty/'auto'.
+ */
+export function activeEngine(prefOverride?: string): EngineCaps {
   if (isForcedMock()) return ENGINE_CAPS.mock;
-  const pref = VIDEO_ENGINE.value();
+  const override = (prefOverride ?? '').trim();
+  const pref = override && override !== 'auto' ? override : VIDEO_ENGINE.value();
   const hf = higgsfieldConfigured();
   const hf25 = hf && Boolean(SEEDANCE25_PATH.value().trim());
   const ark = arkConfigured();
