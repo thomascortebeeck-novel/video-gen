@@ -101,12 +101,12 @@ export function buildArkBody(req: VideoGenRequest): Record<string, unknown> {
     }
     body.omni_reference_task_type = 'extend';
     body.ratio = 'adaptive';
-  } else if (req.imageRefUrls.length > 0 || req.identityVideoUrl) {
-    // Omni reference mode (subject angles, environment, bridge frame first;
-    // optional plain reference_video carrying character identity).
+  } else if (req.imageRefUrls.length > 0 || (req.videoRefUrls?.length ?? 0) > 0) {
+    // Omni reference mode: plain reference_video clips first (character
+    // screen tests — @Video N binds by attachment order), then images.
     content.push({ type: 'text', text: arkTagStyle(req.prompt) });
-    if (req.identityVideoUrl) {
-      content.push({ type: 'video_url', video_url: { url: req.identityVideoUrl }, role: 'reference_video' });
+    for (const url of (req.videoRefUrls ?? []).slice(0, 10)) {
+      content.push({ type: 'video_url', video_url: { url }, role: 'reference_video' });
     }
     for (const url of req.imageRefUrls.slice(0, 30)) {
       content.push({ type: 'image_url', image_url: { url }, role: 'reference_image' });

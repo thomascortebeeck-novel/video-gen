@@ -155,12 +155,12 @@ const StageSchema = z.object({
 });
 
 const SceneRefSchema = z.object({
-  kind: z.enum(['subject_angle', 'environment', 'style']),
-  subjectId: z.string().optional().describe('required when kind=subject_angle'),
+  kind: z.enum(['subject_video', 'subject_angle', 'environment', 'style']),
+  subjectId: z.string().optional().describe('required when kind=subject_video (characters) or subject_angle (products)'),
   angleId: z.string().optional().describe('required when kind=subject_angle: an angle id from that subject\'s inventory'),
   envKey: z.string().optional().describe('required when kind=environment: key of an environment you defined'),
-  use: z.string().describe('Reference line: what to take. Name the subject by story role. E.g. "the climber\'s face, close up, front."'),
-  ignore: z.string().optional().describe('What to leave: "Do not use the image background."'),
+  use: z.string().describe('Reference line: what to take. Name the subject by story role. E.g. "the climber — identity, hair, wardrobe and voice exactly per this clip."'),
+  ignore: z.string().optional().describe('What to leave: "Do not use the image background." / "Do not replay the clip\'s staging."'),
 });
 
 const SceneSchema = z.object({
@@ -272,7 +272,8 @@ const directorSystem = (caps: EngineCaps) => `You are a professional film direct
 == REFERENCES (per scene) ==
 - Choose angle images matching the scene's framing: full-body angles for wide/action scenes, face close-ups for dialogue/emotion scenes, back/rear-three-quarter when the camera is behind. 2-4 angles per main subject on screen, 1-2 for secondary.
 - Every reference gets: use (what to take, naming the role and the view) and ignore (what to leave — always exclude photo backgrounds).
-- Products: reference the angle set and state all images are the same single object.
+- CHARACTERS: reference them ONLY with kind "subject_video" — the character's screen-test clip (their video master, generated separately). It carries identity AND voice: use = "…identity, hair, wardrobe and the voice exactly per this clip"; ignore = "Do not replay the clip's staging or its studio backdrop." NEVER use kind "subject_angle" for characters — the video platforms' moderation rejects character images (real-person filter); only videos pass. Dialogue lines render as: In their voice (@videoN).
+- Products: reference the angle set (kind "subject_angle") and state all images are the same single object — product images pass moderation fine.
 - Add the scene's environment reference (kind "environment") so location holds across scenes; define each distinct location once in environments[] with type "location".
 - environments[].refPrompt: a wide establishing image prompt for that location, empty of people, describing space, materials, and how the light behaves, in the film's palette.
 - ON-SCREEN TEXT: video models cannot spell reliably. Whenever the story shows text that must read EXACTLY (a phone message, chat bubble, sign, menu, scoreboard, title card), plan an environments[] entry with type "insert_card" UPFRONT — one card per distinct screen. Put the EXACT text in quotes in the description, and use refPrompt for the layout/design (UI chrome, brand colours, type hierarchy). The scene that shows it must add the card as a reference (kind "environment") with use: "reproduce this screen exactly — never respell, redraw or reflow its text", and the stage action names the card's tag at the moment it fills the frame.

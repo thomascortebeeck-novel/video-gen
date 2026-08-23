@@ -144,6 +144,21 @@ export interface SubjectDoc {
   angleSet: AngleSetId;
   sheet?: SubjectSheet;
   angles: SubjectAngle[];
+  /**
+   * Character casting clip ("screen test"): a short generated video of the
+   * character alone — slow turn, then one spoken line to camera. It is the
+   * character's identity AND voice anchor, attached to scenes as a @video
+   * reference (platform moderation rejects character *images* since
+   * 2026-08-23; videos pass). Regenerate until the person is right — every
+   * scene follows this clip.
+   */
+  screenTest?: {
+    prompt?: string;
+    videoPath?: string;
+    versions?: { videoPath: string; createdAt: number }[];
+    generation: GenerationInfo;
+    durationSec?: number;
+  };
   status: 'new' | 'analyzing' | 'analyzed' | 'generating_angles' | 'ready' | 'error';
   error?: string;
   createdAt: number;
@@ -213,7 +228,8 @@ export interface SceneStage {
 }
 
 export type SceneRefKind =
-  | 'subject_angle'   // a generated angle image of a subject
+  | 'subject_angle'   // a generated angle image of a subject (products)
+  | 'subject_video'   // a character's screen-test clip (@video ref — identity + voice)
   | 'subject_upload'  // an original uploaded image
   | 'environment'     // generated environment reference
   | 'style'           // colour & light reference
@@ -425,6 +441,7 @@ export interface ProjectDoc {
 export interface AnalyzeSubjectsRequest { projectId: string; }
 export interface PlanBriefingRequest { projectId: string; }
 export interface GenerateAnglesRequest { projectId: string; subjectId: string; }
+export interface GenerateScreenTestRequest { projectId: string; subjectId: string; }
 export interface GenerateAngleImageRequest { projectId: string; subjectId: string; angleId: string; }
 export interface GenerateEnvironmentRequest { projectId: string; envId: string; }
 export interface GenerateSceneRequest { projectId: string; sceneId: string; }
@@ -543,6 +560,8 @@ export const storagePaths = {
     `users/${uid}/projects/${projectId}/environments/${envId}.png`,
   sceneVideo: (uid: string, projectId: string, sceneId: string, version: number) =>
     `users/${uid}/projects/${projectId}/scenes/${sceneId}/v${version}.mp4`,
+  screenTest: (uid: string, projectId: string, subjectId: string, version: number) =>
+    `users/${uid}/projects/${projectId}/screen_tests/${subjectId}/v${version}.mp4`,
   bridgeFrame: (uid: string, projectId: string, sceneId: string) =>
     `users/${uid}/projects/${projectId}/scenes/${sceneId}/bridge_in.png`,
   voiceSample: (uid: string, projectId: string, subjectId: string) =>

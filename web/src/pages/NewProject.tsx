@@ -81,8 +81,9 @@ export default function NewProject() {
       <div className="card mb-6 p-5">
         <h2 className="mb-1 font-medium text-zinc-100">1 · Characters & products</h2>
         <p className="mb-4 text-xs text-zinc-500">
-          The system builds a locked reference sheet + angle images for each subject (characters: 8-image fast set
-          by default — 4 full-body + 4 close-ups; products: angle count auto-chosen by product type).
+          Characters get a locked written sheet + a casting <strong>screen test</strong> (a short video master — the
+          identity and voice every scene follows; recast until you like the person). Products get a reference sheet +
+          angle images (count auto-chosen by product type).
         </p>
         {subjects.map((s) => (
           <div key={s.key} className="mb-3 rounded-lg border border-zinc-800 p-4">

@@ -9,12 +9,13 @@ import { ALL_SECRETS, REGION, activeEngine, activeImageProvider } from './config
 import {
   runAnalyzeSubjects, runPlanBriefing, runGenerateAngles, runGenerateSingleAngle,
   runGenerateEnvironment, runGenerateVoiceSample, runGenerateScene,
-  runRefreshScene, runAssembleFinal,
+  runRefreshScene, runAssembleFinal, runGenerateScreenTest,
 } from './pipeline';
 import type {
   AnalyzeSubjectsRequest, PlanBriefingRequest, GenerateAnglesRequest,
   GenerateAngleImageRequest, GenerateEnvironmentRequest, GenerateSceneRequest,
-  AssembleFinalRequest, GenerateVoiceSampleRequest, PipelineStepResult,
+  AssembleFinalRequest, GenerateVoiceSampleRequest, GenerateScreenTestRequest,
+  PipelineStepResult,
 } from '../../shared/types';
 
 setGlobalOptions({ region: REGION, maxInstances: 10 });
@@ -56,6 +57,12 @@ export const generateAngles = onCall(
 export const generateAngleImage = onCall(
   { secrets: ALL_SECRETS, timeoutSeconds: 900, memory: '1GiB' },
   wrap<GenerateAngleImageRequest>(async (uid, d) => { await runGenerateSingleAngle(uid, d.projectId, d.subjectId, d.angleId); }),
+);
+
+/** Generate a character's casting screen test (video master: identity + voice). */
+export const generateScreenTest = onCall(
+  { secrets: ALL_SECRETS, timeoutSeconds: 1800, memory: '1GiB' },
+  wrap<GenerateScreenTestRequest>(async (uid, d) => { await runGenerateScreenTest(uid, d.projectId, d.subjectId); }),
 );
 
 /** Generate an environment reference image. */

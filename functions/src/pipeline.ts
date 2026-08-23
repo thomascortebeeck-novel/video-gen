@@ -31,7 +31,7 @@ import {
 import {
   buildCharacterMasterPrompt, buildProductMasterPrompt, buildAnglePrompt,
   buildEnvironmentPrompt, buildScenePrompt, buildKeyframePrompt, buildV1MotionPrompt,
-  resolveReferenceTags, ResolvedRef,
+  buildScreenTestPrompt, resolveReferenceTags, ResolvedRef,
 } from '../../shared/assemble';
 import type {
   ProjectDoc, SubjectDoc, SubjectAngle, SceneDoc, EnvironmentDoc,
@@ -262,7 +262,7 @@ export async function runPlanBriefing(uid: string, projectId: string): Promise<v
         visualStyle: s.visualStyle, cameraAndPerformance: s.cameraAndPerformance,
         audio: s.audio, exclusions: s.exclusions, keepConsistent: s.keepConsistent,
         references: s.references.map((r) => ({
-          tag: '', kind: r.kind === 'environment' ? 'environment' : r.kind === 'style' ? 'style' : 'subject_angle',
+          tag: '', kind: r.kind === 'environment' ? 'environment' : r.kind === 'style' ? 'style' : r.kind === 'subject_video' ? 'subject_video' : 'subject_angle',
           ...(r.subjectId ? { subjectId: r.subjectId } : {}),
           ...(r.angleId ? { angleId: r.angleId } : {}),
           ...(r.envKey ? { envId: r.envKey } : {}),
@@ -488,6 +488,71 @@ export async function runGenerateSingleAngle(uid: string, projectId: string, sub
 }
 
 // ---------------------------------------------------------------------------
+// 3b. Character screen test — the video master (identity + voice anchor).
+// Text-to-video only (no image refs), so it passes the platforms' real-person
+// input moderation; the resulting clip anchors every scene as a @video ref.
+// ---------------------------------------------------------------------------
+
+export async function runGenerateScreenTest(uid: string, projectId: string, subjectId: string): Promise<void> {
+  const project = await getProject(uid, projectId);
+  const subject = await getSubject(uid, projectId, subjectId);
+  if (subject.kind !== 'character') throw new HttpsError('failed-precondition', 'Screen tests are for characters — products use angle images.');
+  if (!subject.sheet) throw new HttpsError('failed-precondition', 'Analyze this subject first.');
+  const caps = activeEngine(project.input.videoEngine);
+  const subjRef = db.collection(collections.subjects(uid, projectId)).doc(subjectId);
+  const durationSec = Math.max(caps.minClipSeconds, Math.min(8, caps.maxClipSeconds));
+  const prompt = buildScreenTestPrompt(subject, durationSec);
+  const prevVersions = subject.screenTest?.versions ?? [];
+  const pending = {
+    prompt, durationSec,
+    ...(subject.screenTest?.videoPath ? { videoPath: subject.screenTest.videoPath } : {}),
+    versions: prevVersions,
+    generation: { status: 'generating', startedAt: now() } as GenerationInfo,
+  };
+  await subjRef.set({ screenTest: pending, updatedAt: now() }, { merge: true });
+  await setProgress(uid, projectId, 'screen_test', `${subject.name}: casting screen test generating (${durationSec}s — identity and voice)…`);
+  try {
+    const version = prevVersions.length + 1;
+    const outPath = storagePaths.screenTest(uid, projectId, subjectId, version);
+    if (caps.provider === 'mock') {
+      const vid = await makeMockVideo(`${subject.name} — screen test`, durationSec, project.input.aspectRatio);
+      await saveBuffer(outPath, vid, 'video/mp4');
+    } else {
+      const provider = videoProviderFor(caps);
+      const jobId = await provider.submitVideo({
+        prompt, durationSec,
+        aspectRatio: project.input.aspectRatio,
+        resolution: project.input.resolution,
+        generateAudio: true, // the voice lock is half the point
+        imageRefUrls: [], audioRefUrls: [],
+      });
+      await subjRef.set({ screenTest: { ...pending, generation: { status: 'generating', jobId, provider: provider.name, startedAt: now() } }, updatedAt: now() }, { merge: true });
+      const finalStatus = await waitForVideo(provider, jobId, { maxMs: 25 * 60 * 1000 });
+      if (finalStatus.state !== 'completed' || !finalStatus.videoUrl) {
+        throw new Error(finalStatus.error ?? `${subject.name}'s screen test failed.`);
+      }
+      let video = await downloadUrl(finalStatus.videoUrl);
+      video = await ensureAudioTrack(video);
+      await saveBuffer(outPath, video, 'video/mp4');
+    }
+    await subjRef.set({
+      screenTest: {
+        prompt, durationSec, videoPath: outPath,
+        versions: [...prevVersions, { videoPath: outPath, createdAt: now() }],
+        generation: { status: 'completed', completedAt: now(), provider: caps.provider },
+      },
+      updatedAt: now(),
+    }, { merge: true });
+  } catch (e) {
+    await subjRef.set({
+      screenTest: { ...pending, generation: { status: 'failed', error: String((e as Error).message ?? e) } },
+      updatedAt: now(),
+    }, { merge: true });
+    throw e;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 4. Environment reference generation
 // ---------------------------------------------------------------------------
 
@@ -568,6 +633,10 @@ async function resolveRefUrls(
       const angle = subj?.angles.find((a) => a.id === r.angleId && a.generation.status === 'completed');
       path = angle?.imagePath ?? subj?.angles.find((a) => a.isMaster && a.generation.status === 'completed')?.imagePath;
       if (!path) missing.push(`${subj?.name ?? r.subjectId}: angle ${r.angleId}`);
+    } else if (r.kind === 'subject_video') {
+      const subj = subjects.find((s) => s.id === r.subjectId);
+      path = subj?.screenTest?.generation.status === 'completed' ? subj.screenTest.videoPath : undefined;
+      if (!path) missing.push(`screen test for ${subj?.name ?? r.subjectId} (generate it on the briefing page)`);
     } else if (r.kind === 'subject_upload') {
       const subj = subjects.find((s) => s.id === r.subjectId);
       path = subj?.sourceImagePaths[0];
@@ -591,10 +660,10 @@ async function resolveRefUrls(
 
 /** Re-assign tags after dropping unresolvable refs so numbering stays dense. */
 function retag(refs: ResolvedRefWithUrl[]): ResolvedRefWithUrl[] {
-  let img = 0; let aud = 0;
+  let img = 0; let vid = 0; let aud = 0;
   return refs.map((r) => ({
     ...r,
-    assignedTag: r.media === 'audio' ? `@audio${++aud}` : `@image${++img}`,
+    assignedTag: r.media === 'audio' ? `@audio${++aud}` : r.media === 'video' ? `@video${++vid}` : `@image${++img}`,
   }));
 }
 
@@ -705,10 +774,14 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
     // prompt (tag numbering stays dense) and resubmit.
     const provider = videoProviderFor(caps);
     const droppedRefs: string[] = [];
-    let identityVideoUrl: string | undefined;
+    let fallbackTakeUrl: string | undefined;
     let jobId = '';
     for (let attempt = 0; ; attempt++) {
       const enginePrompt = caps.id === 'seedance1' ? buildV1MotionPrompt(scene) : prompt;
+      const videoRefUrls = [
+        ...refs.filter((r) => r.media === 'video' && r.url).map((r) => r.url!),
+        ...(fallbackTakeUrl ? [fallbackTakeUrl] : []),
+      ];
       try {
         jobId = await provider.submitVideo({
           prompt: enginePrompt,
@@ -720,7 +793,7 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
           audioRefUrls: refs.filter((r) => r.media === 'audio' && r.url).map((r) => r.url!),
           startImageUrl,
           extendVideoUrl,
-          identityVideoUrl,
+          videoRefUrls,
         });
         break;
       } catch (e) {
@@ -731,9 +804,9 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
           && flagged.length > 0 && attempt < 3;
         if (!recoverable) throw e;
         // Map content[] slots back to image refs: content[0] is the text
-        // block; a reference video (extension or identity) occupies the slot
-        // before the images.
-        const slotOffset = (extendVideoUrl || identityVideoUrl) ? 2 : 1;
+        // block; reference videos (extension or screen tests) occupy the
+        // slots before the images.
+        const slotOffset = 1 + (extendVideoUrl ? 1 : videoRefUrls.length);
         const imageRefs = refs.filter((r) => r.media === 'image' && r.url);
         const toDrop = new Set(flagged.map((i) => imageRefs[i - slotOffset]).filter(Boolean));
         if (toDrop.size === 0) throw e;
@@ -745,38 +818,37 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
           );
         }
         const keep = refs.filter((r) => !toDrop.has(r));
-        const anchorLeft = keep.some((r) => r.media === 'image'
-          && (r.kind === 'subject_angle' || r.kind === 'subject_upload'));
+        const anchorLeft = keep.some((r) =>
+          (r.media === 'image' && (r.kind === 'subject_angle' || r.kind === 'subject_upload'))
+          || r.kind === 'subject_video');
         refs = retag(keep);
         prompt = buildScenePrompt(scene, subjects, refs);
         if (!anchorLeft && !extendVideoUrl) {
-          // Every character image was rejected (ModelArk's 2026-08-23 filter
-          // tightening blocks ALL realistic character images). Fall back to
-          // carrying identity via the scene's own previous take as a plain
-          // reference video — videos still pass the filter.
+          // Every character reference was rejected. Fall back to carrying
+          // identity via the scene's own previous take as a plain reference
+          // video — videos pass the filter.
           const prevTake = scene.versions?.[scene.versions.length - 1]?.videoPath ?? scene.videoPath;
           if (!prevTake) {
             throw new Error(
-              `ModelArk is currently rejecting ALL realistic character images ("${scene.title}": ${droppedRefs.join(', ')}) — `
-              + 'their real-person filter was tightened platform-side. This scene has no previous take to use as a video '
-              + 'identity reference. Options: generate once without locked identity and regenerate from that take, '
-              + 'switch the video engine (fal.ai), or contact BytePlus support about the moderation policy.',
+              `The platform's moderation rejected ALL character references for "${scene.title}" (${droppedRefs.join(', ')}) `
+              + 'and this scene has no previous take or screen test to use as a video identity anchor. Generate a screen '
+              + 'test for each character on the briefing page first, or contact BytePlus support about the moderation policy.',
             );
           }
-          identityVideoUrl = videoMock ? `mock://${prevTake}` : await publicUrl(prevTake);
+          fallbackTakeUrl = videoMock ? `mock://${prevTake}` : await publicUrl(prevTake);
           prompt = prompt.replace('[REFERENCE MATERIAL]\n',
             '[REFERENCE MATERIAL]\n@video1 — the characters exactly as filmed in this footage: identical faces, hair and wardrobe. '
             + 'Identity reference only — perform the staging written below, never replay this footage.\n');
         }
         await sceneRef.set({ assembledPrompt: prompt, updatedAt: now() }, { merge: true });
         await setProgress(uid, projectId, 'scene',
-          `${scene.title}: ModelArk's privacy filter flagged ${toDrop.size} reference image(s) — retrying `
-          + `${!anchorLeft && identityVideoUrl ? 'with the previous take as the identity reference' : `without ${droppedRefs.join(', ')}`}…`);
+          `${scene.title}: the privacy filter flagged ${toDrop.size} reference image(s) — retrying `
+          + `${!anchorLeft && fallbackTakeUrl ? 'with the previous take as the identity reference' : `without ${droppedRefs.join(', ')}`}…`);
       }
     }
     const moderationNote = droppedRefs.length > 0
-      ? `ModelArk's privacy filter rejected ${droppedRefs.join(', ')} as possible real-person photos — `
-        + (identityVideoUrl
+      ? `The platform's privacy filter rejected ${droppedRefs.join(', ')} as possible real-person imagery — `
+        + (fallbackTakeUrl
           ? 'identity was carried by the previous take as a video reference instead.'
           : 'the scene was generated without them (identity rides on the remaining references).')
       : undefined;

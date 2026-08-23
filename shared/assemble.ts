@@ -152,15 +152,43 @@ export function buildEnvironmentPrompt(env: EnvironmentDoc, briefing: Briefing |
   return lines.join('\n');
 }
 
+/**
+ * Casting clip ("screen test") for a character: one person alone, a slow turn
+ * for angle coverage, then a spoken line to camera — the clip becomes the
+ * character's identity AND voice anchor, attached to scenes as @video.
+ * Composition follows video-reference best practice (single subject, face
+ * large and clearly lit, consistent wardrobe, clean audio).
+ */
+export function buildScreenTestPrompt(subject: SubjectDoc, durationSec: number): string {
+  const sheet = subject.sheet;
+  const name = sheet?.roleName ?? subject.name;
+  const voice = sheet?.voice;
+  const voiceLine = voice
+    ? `${voice.delivery ?? 'natural, warm'}, ${voice.language ?? 'English'}${voice.accent ? ` with a ${voice.accent} accent` : ''}`
+    : 'a natural, warm voice matching their age and presence';
+  const half = Math.round(durationSec / 2);
+  return [
+    `[GOAL]\nA casting screen test of one single person: ${name}. Duration: ${durationSec} seconds.`,
+    `[CHARACTER]\n${[sheet?.identityBlock, sheet?.physique, sheet?.wardrobe, sheet?.distinguishingMarks].filter(Boolean).join(' ')}${sheet?.negations ? ` ${sheet.negations}.` : ''}`,
+    `[CONTINUITY]\nOne person alone in a plain warm-grey casting studio, soft even key light, no props. The same person, hair and wardrobe from first frame to last.`,
+    `[STAGE 1 | 0-${half}s | The turn] Full body visible, standing centred; they turn slowly once around — front, side, back, and back to front — relaxed and natural. NO CUT.`,
+    `[STAGE 2 | ${half}-${durationSec}s | The line] The camera moves closer to a chest-up framing, their face large and clearly lit; they look straight into the lens, smile naturally, and speak with accurate lip-sync. ${name} — in ${voiceLine}: {Hi, I'm ${subject.name}. This is how I look and sound.} End: holding an easy smile at the camera. NO CUT.`,
+    `[VISUAL STYLE]\nClean neutral casting-tape look: photoreal, true colours, soft even light, real skin texture with visible pores, fine grain.`,
+    `[AUDIO]\nno music <quiet room tone> Their voice clean, close and dry. No other voices.`,
+    `[EXCLUSIONS]\nNo other people, no text, no captions, no logos, no watermarks, no props.`,
+    `[MAINTAIN CONSISTENCY]\nsame single person throughout; same wardrobe and hair; plain studio unchanged.`,
+  ].join('\n\n');
+}
+
 // ---------------------------------------------------------------------------
 // Scene prompt — the advanced Seedance 2.5 template
 // ---------------------------------------------------------------------------
 
 export interface ResolvedRef extends SceneReference {
-  /** e.g. "@image3" or "@audio1" — assigned here, in listed order */
+  /** e.g. "@image3", "@video1" or "@audio1" — assigned here, in listed order */
   assignedTag: string;
-  /** whether this reference resolves to an image or an audio file */
-  media: 'image' | 'audio';
+  /** whether this reference resolves to an image, video or audio file */
+  media: 'image' | 'video' | 'audio';
 }
 
 /**
@@ -171,6 +199,7 @@ export interface ResolvedRef extends SceneReference {
 export function resolveReferenceTags(scene: SceneDoc): ResolvedRef[] {
   const orderOf = (r: SceneReference): number => {
     switch (r.kind) {
+      case 'subject_video': return 1; // character screen tests lead with the subjects
       case 'subject_angle': return 1;
       case 'subject_upload': return 1;
       case 'environment': return 2;
@@ -181,10 +210,11 @@ export function resolveReferenceTags(scene: SceneDoc): ResolvedRef[] {
     }
   };
   const sorted = [...scene.references].sort((a, b) => orderOf(a) - orderOf(b));
-  let img = 0; let aud = 0;
+  let img = 0; let vid = 0; let aud = 0;
   return sorted.map((r) => {
-    const media: 'image' | 'audio' = r.kind === 'voice_audio' ? 'audio' : 'image';
-    const assignedTag = media === 'audio' ? `@audio${++aud}` : `@image${++img}`;
+    const media: 'image' | 'video' | 'audio' =
+      r.kind === 'voice_audio' ? 'audio' : r.kind === 'subject_video' ? 'video' : 'image';
+    const assignedTag = media === 'audio' ? `@audio${++aud}` : media === 'video' ? `@video${++vid}` : `@image${++img}`;
     return { ...r, assignedTag, media };
   });
 }
@@ -264,7 +294,8 @@ export function buildScenePrompt(
     return subj?.sheet?.roleName ?? subj?.name ?? 'the character';
   };
   const voiceTagOf = (subjectId: string | undefined): string | undefined =>
-    refs.find((r) => r.kind === 'voice_audio' && r.subjectId === subjectId)?.assignedTag;
+    refs.find((r) => r.kind === 'voice_audio' && r.subjectId === subjectId)?.assignedTag
+    ?? refs.find((r) => r.kind === 'subject_video' && r.subjectId === subjectId)?.assignedTag;
 
   const sections: string[] = [];
 
@@ -274,7 +305,7 @@ export function buildScenePrompt(
   // [REFERENCE MATERIAL] — grouped, every reference bound to its own tag
   const groups: { title: string; kinds: string[] }[] = [
     { title: 'Bridge frame', kinds: ['bridge_frame'] },
-    { title: 'Characters and products', kinds: ['subject_angle', 'subject_upload'] },
+    { title: 'Characters and products', kinds: ['subject_video', 'subject_angle', 'subject_upload'] },
     { title: 'Scenes', kinds: ['environment'] },
     { title: 'Colour and light', kinds: ['style'] },
     { title: 'Voice', kinds: ['voice_audio'] },

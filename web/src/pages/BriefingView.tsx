@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { api, patchDoc } from '../lib/api';
-import { Section, Field, StatusChip, StorageImg, StorageAudio, Spinner, ErrorNote } from '../components/ui';
+import { Section, Field, StatusChip, StorageImg, StorageAudio, StorageVideo, Spinner, ErrorNote } from '../components/ui';
 import SceneEditor from './SceneEditor';
 import type { ProjectDoc, SubjectDoc, SceneDoc, EnvironmentDoc, Briefing } from '@shared/types';
 import { collections } from '@shared/types';
@@ -24,23 +24,32 @@ export default function BriefingView({ uid, project, subjects, scenes, environme
   const saveBriefing = (patch: Partial<Briefing> | Record<string, unknown>) =>
     void patchDoc(projectPath, { briefing: { ...briefing, ...patch } });
 
+  const subjectReady = (s: SubjectDoc) => s.kind === 'character'
+    ? s.screenTest?.generation.status === 'completed'
+    : s.angles.length > 0 && s.angles.every((a) => a.generation.status === 'completed');
   const allAnglesReady = subjects.length > 0
-    && subjects.every((s) => s.angles.length > 0 && s.angles.every((a) => a.generation.status === 'completed'))
+    && subjects.every(subjectReady)
     && environments.every((e) => e.generation.status === 'completed');
-  const anyAngleIdle = subjects.some((s) => s.angles.some((a) => a.generation.status === 'idle' || a.generation.status === 'failed'));
+  const anyAngleIdle = subjects.some((s) => !subjectReady(s) && s.sheet);
 
   return (
     <div>
-      {/* ================= Subjects & angle sets ================= */}
+      {/* ================= Subjects: screen tests & angle sets ================= */}
       <Section
-        title="Reference sheets & angle images"
-        subtitle="Master angle first — it locks the design; every other angle references it so nothing drifts."
+        title="Reference sheets, screen tests & angle images"
+        subtitle="Characters get a casting screen test (video master — identity + voice); products get an angle-image set locked to the master."
         right={anyAngleIdle && briefing ? (
           <button className="btn btn-primary" disabled={busyKeys['all_angles']}
             onClick={() => void track('all_angles', async () => {
-              for (const s of subjects) await api.generateAngles({ projectId: project.id, subjectId: s.id });
+              for (const s of subjects) {
+                if (s.kind === 'character') {
+                  if (s.screenTest?.generation.status !== 'completed') await api.generateScreenTest({ projectId: project.id, subjectId: s.id });
+                } else {
+                  await api.generateAngles({ projectId: project.id, subjectId: s.id });
+                }
+              }
             })}>
-            {busyKeys['all_angles'] ? <><Spinner /> Generating…</> : 'Generate all angle sets'}
+            {busyKeys['all_angles'] ? <><Spinner /> Generating…</> : 'Generate all reference assets'}
           </button>
         ) : undefined}
       >
@@ -216,7 +225,15 @@ function SubjectCard({ uid, project, subject, busy, track, voicesEnabled }: {
           <button className="btn btn-ghost" onClick={() => setShowSheet((v) => !v)}>
             {showSheet ? 'Hide sheet' : 'Edit sheet'}
           </button>
-          {sheet && (
+          {sheet && subject.kind === 'character' && (
+            <button className="btn btn-primary" disabled={busy[`st_${subject.id}`] || subject.screenTest?.generation.status === 'generating'}
+              onClick={() => void track(`st_${subject.id}`, () => api.generateScreenTest({ projectId: project.id, subjectId: subject.id }))}>
+              {busy[`st_${subject.id}`] || subject.screenTest?.generation.status === 'generating'
+                ? <><Spinner /> Screen test…</>
+                : subject.screenTest?.videoPath ? '↻ Recast (new screen test)' : 'Generate screen test'}
+            </button>
+          )}
+          {sheet && subject.kind === 'product' && (
             <button className="btn btn-primary" disabled={busy[`angles_${subject.id}`]}
               onClick={() => void track(`angles_${subject.id}`, () => api.generateAngles({ projectId: project.id, subjectId: subject.id }))}>
               {busy[`angles_${subject.id}`] ? <><Spinner /> {doneCount}/{subject.angles.length}</> : doneCount > 0 ? 'Regenerate missing' : 'Generate angles'}
@@ -225,6 +242,25 @@ function SubjectCard({ uid, project, subject, busy, track, voicesEnabled }: {
         </div>
       </div>
       <ErrorNote error={subject.error} />
+      {subject.kind === 'character' && (
+        <div className="mt-3">
+          <p className="mb-1 text-xs text-zinc-500">
+            Casting screen test — the character's video master: a slow turn plus one spoken line. Identity <em>and</em> voice
+            for every scene follow this clip; recast until you like the person.
+          </p>
+          {subject.screenTest?.videoPath ? (
+            <div className="flex flex-wrap items-start gap-3">
+              <StorageVideo path={subject.screenTest.videoPath} className="max-h-64 rounded-lg" />
+              {(subject.screenTest.versions?.length ?? 0) > 1 && (
+                <p className="text-[11px] text-zinc-600">{subject.screenTest.versions!.length} takes — latest shown</p>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-zinc-600">No screen test yet — scenes can't lock this character until one exists.</p>
+          )}
+          <ErrorNote error={subject.screenTest?.generation.status === 'failed' ? subject.screenTest.generation.error : undefined} />
+        </div>
+      )}
 
       {showSheet && sheet && (
         <div className="mt-4 grid gap-3 rounded-lg border border-zinc-800 p-4 sm:grid-cols-2">
@@ -249,7 +285,7 @@ function SubjectCard({ uid, project, subject, busy, track, voicesEnabled }: {
         </div>
       )}
 
-      {subject.angles.length > 0 && (
+      {subject.angles.length > 0 && (subject.kind === 'product' || subject.angles.some((a) => a.imagePath)) && (
         <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
           {subject.angles.map((a) => (
             <div key={a.id} className="group relative">

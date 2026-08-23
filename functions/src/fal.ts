@@ -92,13 +92,13 @@ export function buildFalSeedanceRequest(req: VideoGenRequest): { endpoint: strin
       },
     };
   }
-  if (req.imageRefUrls.length > 0 || req.identityVideoUrl) {
+  if (req.imageRefUrls.length > 0 || (req.videoRefUrls?.length ?? 0) > 0) {
     return {
       endpoint: `${base}/reference-to-video`,
       body: {
         ...common,
         ...(req.imageRefUrls.length > 0 ? { image_urls: req.imageRefUrls.slice(0, 30) } : {}),
-        ...(req.identityVideoUrl ? { video_urls: [req.identityVideoUrl] } : {}),
+        ...((req.videoRefUrls?.length ?? 0) > 0 ? { video_urls: req.videoRefUrls!.slice(0, 10) } : {}),
         ...(req.audioRefUrls.length > 0 ? { audio_urls: req.audioRefUrls.slice(0, 10) } : {}),
         aspect_ratio: req.aspectRatio,
       },
