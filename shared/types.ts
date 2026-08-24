@@ -572,6 +572,31 @@ export type ProjectStatus =
   | 'done'
   | 'error';
 
+/**
+ * A project-level audio track laid over the assembled film — the voiceover and
+ * the continuous background bed. Scene generations each invent their own
+ * narrator and score, so the film's real audio lives here: generated speech is
+ * separated out of every take (Demucs two-stem) and these tracks replace it.
+ */
+export interface AudioTrackDoc {
+  id: string;
+  kind: 'voiceover' | 'music' | 'ambience';
+  /** Display name, e.g. "Narrator — Lily (ElevenLabs)" */
+  name: string;
+  /** Storage path of the full-length track, already placed on the film timeline */
+  audioPath: string;
+  /** Seconds from film start (0 for full-length pre-placed tracks) */
+  offsetSec: number;
+  gainDb: number;
+  /** Music ducks under the voiceover track during spoken lines */
+  duckUnderVoice?: boolean;
+  /** True on the track set the published final mix uses */
+  active?: boolean;
+  /** Where it came from: 'elevenlabs' | 'demucs_no_vocals' | 'upload' */
+  source?: string;
+  updatedAt: number;
+}
+
 export interface ProjectDoc {
   id: string;
   title: string;
@@ -582,6 +607,8 @@ export interface ProjectDoc {
   progress?: { step: string; message: string; pct?: number };
   error?: string;
   finalVideoPath?: string;
+  /** Project-level audio tracks (voiceover, background bed) used by the final mix */
+  audioTracks?: AudioTrackDoc[];
   finalAssembly?: { status: GenStatus; error?: string; completedAt?: number };
   createdAt: number;
   updatedAt: number;
@@ -740,6 +767,8 @@ export const storagePaths = {
     `users/${uid}/projects/${projectId}/scenes/${sceneId}/verify/v${version}_sheet.png`,
   voiceSample: (uid: string, projectId: string, subjectId: string) =>
     `users/${uid}/projects/${projectId}/audio/${subjectId}_voice_sample.mp3`,
+  audioTrack: (uid: string, projectId: string, trackId: string) =>
+    `users/${uid}/projects/${projectId}/audio/tracks/${trackId}.wav`,
   finalVideo: (uid: string, projectId: string, version: number) =>
     `users/${uid}/projects/${projectId}/final/final_v${version}.mp4`,
 };

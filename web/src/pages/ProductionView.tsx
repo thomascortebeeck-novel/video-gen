@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { api } from '../lib/api';
 import type { RegenerationPlan } from '../lib/api';
-import { Section, Spinner, StatusChip, StorageImg, StorageVideo, ErrorNote } from '../components/ui';
+import { Section, Spinner, StatusChip, StorageImg, StorageVideo, StorageAudio, ErrorNote } from '../components/ui';
 import { useStorageUrl } from '../lib/hooks';
 import type { ProjectDoc, SubjectDoc, SceneDoc, EnvironmentDoc, Resolution } from '@shared/types';
 import { resolveReferenceTags } from '@shared/assemble';
@@ -211,6 +211,28 @@ export default function ProductionView({ project, subjects, scenes, environments
           })}
         </div>
       </Section>
+
+      {(project.audioTracks?.length ?? 0) > 0 && (
+        <Section title="Audio"
+          subtitle="Project-level tracks laid over the assembled film. Scene generations each invent their own narrator and score, so generated speech is separated out of every take and these tracks are the film's real audio.">
+          <div className="grid gap-3">
+            {project.audioTracks!.map((t) => (
+              <div key={t.id} className="card p-4">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <span className={`chip ${t.kind === 'voiceover' ? 'chip-accent' : 'chip-cool'}`}>{t.kind}</span>
+                  <span className="text-sm font-medium text-ink">{t.name}</span>
+                  {t.active
+                    ? <span className="chip chip-ok" title="This track is in the published final mix">in final mix</span>
+                    : <span className="chip" title="Uploaded and ready, not in the published mix">alternate</span>}
+                  {t.duckUnderVoice && <span className="chip" title="Dips under the narrator during spoken lines">ducks under voice</span>}
+                  {t.source && <span className="font-mono text-xs text-faint">{t.source}</span>}
+                </div>
+                <StorageAudio path={t.audioPath} />
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
 
       <Section title="Final film"
         subtitle="Concatenates all scenes in order: boundary-frame trim on bridged joins, per-clip loudness normalisation, one shared encode.">
