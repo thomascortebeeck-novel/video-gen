@@ -17,8 +17,9 @@ import {
 } from './config';
 import {
   anthropicConfigured, analyzeSubjectWithClaude, planBriefingWithClaude,
-  describePrevizWithClaude, BriefingPlan,
+  describePrevizWithClaude, verifyTakeWithClaude, patchSceneFromNote, BriefingPlan,
 } from './claude';
+import { sttConfigured, transcribeTake, formatTranscript } from './stt';
 import {
   submitImageJob, pollUntilDone, assertCompleted, higgsfieldVideoProvider,
 } from './higgsfield';
@@ -30,7 +31,7 @@ import { elevenLabsConfigured, designVoice, textToSpeech } from './elevenlabs';
 import {
   makeMockImage, makeMockVideo, makeMockAudio, resizeForVision,
   extractLastFrame, extractFramesAtFps, buildContactSheet,
-  concatVideos, ensureAudioTrack, ConcatItem,
+  concatVideos, ensureAudioTrack, ConcatItem, probeVideo, extractAudio,
 } from './media';
 import {
   buildCharacterMasterPrompt, buildProductMasterPrompt, buildAnglePrompt,
@@ -40,9 +41,16 @@ import {
 import {
   buildPrevizScript, buildPrevizRefLine, checkStageTiming, previzAllowed,
 } from '../../shared/previz';
+import {
+  criteriaFor, applyScenePatches, patchableFields, isPatchableField,
+  fieldLabel, SHARED_TEXT_FIELDS,
+} from '../../shared/verify';
+import { estimateCostUsd } from '../../shared/cost';
+import type { SceneVerdict, VerdictIssue } from '../../shared/verify';
 import type {
   ProjectDoc, SubjectDoc, SubjectAngle, SceneDoc, EnvironmentDoc,
   Briefing, GenerationInfo, SubjectSheet, CameraPlan, CameraMapEntry, ScenePreviz, PrevizFeed,
+  ScenePatch, SceneTake,
 } from '../../shared/types';
 import { anglesForSubject, collections, storagePaths } from '../../shared/types';
 
@@ -857,7 +865,14 @@ function retag(refs: ResolvedRefWithUrl[]): ResolvedRefWithUrl[] {
   }));
 }
 
-export async function runGenerateScene(uid: string, projectId: string, sceneId: string): Promise<void> {
+/**
+ * Generate (or re-roll) one scene. `take` carries the reason this version
+ * exists — the note that asked for it and what it changed — so the take
+ * gallery reads as a history rather than a pile of numbered files.
+ */
+export async function runGenerateScene(
+  uid: string, projectId: string, sceneId: string, take?: { note?: string; patchSummary?: string[] },
+): Promise<void> {
   const project = await getProject(uid, projectId);
   const scenes = await getScenes(uid, projectId);
   const scene = scenes.find((s) => s.id === sceneId);
@@ -1080,7 +1095,11 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
     await saveBuffer(outPath, video, 'video/mp4');
     await sceneRef.set({
       videoPath: outPath,
-      versions: [...(scene.versions ?? []), { videoPath: outPath, createdAt: now() }],
+      versions: [...(scene.versions ?? []), {
+        videoPath: outPath, createdAt: now(),
+        ...(take?.note ? { note: take.note } : {}),
+        ...(take?.patchSummary?.length ? { patchSummary: take.patchSummary } : {}),
+      } satisfies SceneTake],
       generation: {
         status: 'completed', jobId, provider: provider.name, completedAt: now(), resultUrl: finalStatus.videoUrl,
         ...(moderationNote ? { moderationNote } : {}),
@@ -1169,4 +1188,255 @@ export async function runAssembleFinal(uid: string, projectId: string): Promise<
     }, { merge: true });
     throw e;
   }
+}
+
+// ---------------------------------------------------------------------------
+// 7. Take verification and re-rolls
+//
+// Reading a take costs cents; re-rolling it costs dollars. So every finding
+// carries the lever that fixes it, and the two steps that spend money are
+// split in half: runPlanRegeneration works out what a note would change and
+// what it would cost (free), and only runRegenerateScene actually generates.
+// ---------------------------------------------------------------------------
+
+/** The lines as planned, for the transcript comparison. */
+function plannedDialogueOf(scene: SceneDoc, subjects: SubjectDoc[]): string | undefined {
+  const named = (id: string) => subjects.find((s) => s.id === id)?.name ?? id;
+  const lines = scene.stages
+    .filter((st) => st.dialogue?.line?.trim())
+    .map((st) => `${st.t0}-${st.t1}s ${named(st.dialogue!.subjectId)}: "${st.dialogue!.line}"`);
+  if (lines.length === 0) return undefined;
+  return lines.join('\n');
+}
+
+/** What was attached to the generation — the model needs this to blame the right lever. */
+function referenceSummaryOf(scene: SceneDoc): string | undefined {
+  const refs = resolveReferenceTags(scene);
+  if (refs.length === 0) return 'Nothing was attached — this take was generated from the prompt alone.';
+  return refs.map((r) => `${r.assignedTag} (${r.kind}): ${r.use}`).join('\n');
+}
+
+function mockVerdict(scene: SceneDoc, takePath: string): SceneVerdict {
+  const criteria = criteriaFor(scene).map((c) => ({ id: c.id, score: 88, note: 'Mock verification — no ANTHROPIC_API_KEY configured.' }));
+  return {
+    status: 'ready', takePath, overall: 88, call: 'minor',
+    headline: 'Mock verdict — set ANTHROPIC_API_KEY to have the take actually read.',
+    criteria,
+    issues: [{
+      severity: 'minor', atSec: 0,
+      what: 'Verification is running in mock mode, so nothing was actually watched.',
+      fixKind: 'accept',
+      fix: 'Configure ANTHROPIC_API_KEY (and ELEVENLABS_API_KEY for dialogue) to get a real read.',
+    }],
+    checkedAt: now(),
+  };
+}
+
+/**
+ * Grade one take against the plan it came from. Spends cents: frames go to
+ * Claude vision, audio to Scribe. Nothing here generates video.
+ */
+export async function runVerifyScene(
+  uid: string, projectId: string, sceneId: string, takePath?: string,
+): Promise<{ overall: number; call: SceneVerdict['call']; issues: number }> {
+  const scene = await getScene(uid, projectId, sceneId);
+  const subjects = await getSubjects(uid, projectId);
+  const path = takePath ?? scene.videoPath;
+  if (!path) throw new HttpsError('failed-precondition', `Generate "${scene.title}" before verifying it.`);
+
+  const ref = sceneDocRef(uid, projectId, sceneId);
+  await ref.set({
+    verdict: { status: 'running', takePath: path, overall: 0, call: 'minor', headline: 'Reading the take…', criteria: [], issues: [], checkedAt: now() },
+    updatedAt: now(),
+  }, { merge: true });
+  await setProgress(uid, projectId, 'verify', `${scene.title}: reading the take against the plan…`);
+
+  try {
+    const video = await downloadToBuffer(path);
+    const probe = await probeVideo(video);
+    const durationSec = probe.durationSec || scene.durationSec;
+
+    // Two frames a second on short clips: enough to catch a beat that never
+    // happens, without paying for near-duplicates on a long one.
+    const fps = durationSec <= 12 ? 2 : 1;
+    // JPEG, not PNG: two dozen photographic frames as PNG is ~4 MB of payload
+    // for no gain — vision bills by dimensions, and the upload is the slow part.
+    const frames = await extractFramesAtFps(video, fps, 24, 'jpeg');
+    if (frames.length === 0) {
+      throw new HttpsError('failed-precondition', 'No frames could be read from that take.');
+    }
+    // The sheet is for the human, so it stays at one tile per second whatever
+    // rate the model was fed at — its timecode stamps are integer seconds.
+    const sheetFrames = fps === 2 ? frames.filter((_, i) => i % 2 === 0) : frames;
+    const sheetPath = storagePaths.verifySheet(uid, projectId, sceneId, now());
+    await saveBuffer(sheetPath, await buildContactSheet(sheetFrames, { cols: 6, secondsPerFrame: 1 }), 'image/png');
+
+    let transcript: string | undefined;
+    if (sttConfigured() && !isForcedMock()) {
+      const audio = await extractAudio(video);
+      if (audio) {
+        const t = await transcribeTake(audio, { maxSpeakers: Math.max(1, subjects.length) });
+        if (t) transcript = formatTranscript(t);
+      }
+    }
+
+    let verdict: SceneVerdict;
+    if (anthropicConfigured() && !isForcedMock()) {
+      const specs = criteriaFor(scene);
+      const read = await verifyTakeWithClaude({
+        frames: frames.map((f, i) => ({
+          image: { data: f, mediaType: 'image/jpeg' as const },
+          atSec: i / fps,
+        })),
+        durationSec,
+        plan: scene.assembledPrompt ?? buildScenePrompt(scene, subjects, resolveReferenceTags(scene)),
+        criteria: specs.map((c) => ({ id: c.id, label: c.label, question: c.question })),
+        transcript,
+        plannedDialogue: plannedDialogueOf(scene, subjects),
+        referenceSummary: referenceSummaryOf(scene),
+      });
+      verdict = {
+        status: 'ready',
+        takePath: path,
+        overall: Math.round(read.overall),
+        call: read.call,
+        headline: read.headline,
+        criteria: read.criteria.map((c) => ({ id: c.id, score: Math.round(c.score), note: c.note })),
+        issues: read.issues as VerdictIssue[],
+        ...(read.suggestedNote ? { suggestedNote: read.suggestedNote } : {}),
+        ...(transcript ? { transcript } : {}),
+        contactSheetPath: sheetPath,
+        checkedAt: now(),
+      };
+    } else {
+      verdict = { ...mockVerdict(scene, path), contactSheetPath: sheetPath, ...(transcript ? { transcript } : {}) };
+    }
+
+    // Stamp the score onto the take itself, so the gallery shows which
+    // version scored what without opening each verdict.
+    const versions = (scene.versions ?? []).map((v) =>
+      (v.videoPath === path ? { ...v, verdictScore: verdict.overall } : v));
+
+    await ref.set({ verdict, ...(versions.length ? { versions } : {}), updatedAt: now() }, { merge: true });
+    await setProgress(uid, projectId, 'verify',
+      `${scene.title}: ${verdict.overall}/100 — ${verdict.issues.length} finding${verdict.issues.length === 1 ? '' : 's'}.`);
+    return { overall: verdict.overall, call: verdict.call, issues: verdict.issues.length };
+  } catch (e) {
+    await ref.set({
+      verdict: {
+        status: 'failed', takePath: path, overall: 0, call: 'minor',
+        headline: 'Verification failed.', criteria: [], issues: [],
+        error: String((e as Error).message ?? e), checkedAt: now(),
+      },
+      updatedAt: now(),
+    }, { merge: true });
+    throw e;
+  }
+}
+
+export interface RegenerationPlan {
+  patches: (ScenePatch & { sharedText: boolean })[];
+  rejected: { field: string; reason: string }[];
+  unaddressable: string[];
+  summary: string;
+  /** The prompt this re-roll would actually send. */
+  prompt: string;
+  estimatedCostUsd: number;
+}
+
+/**
+ * Work out what a note would change — and what generating it would cost —
+ * without spending anything. This is the half of the re-roll that runs before
+ * the confirm dialog; nothing here touches Firestore or the engine.
+ */
+export async function runPlanRegeneration(
+  uid: string, projectId: string, sceneId: string, note: string,
+): Promise<RegenerationPlan> {
+  if (!note.trim()) throw new HttpsError('invalid-argument', 'Write a note describing what should change.');
+  const project = await getProject(uid, projectId);
+  const scene = await getScene(uid, projectId, sceneId);
+  const subjects = await getSubjects(uid, projectId);
+  const fields = patchableFields(scene);
+
+  let raw: { field: string; to: string; why: string }[] = [];
+  let unaddressable: string[] = [];
+  let summary = '';
+  if (anthropicConfigured() && !isForcedMock()) {
+    const verdict = scene.verdict?.status === 'ready' && scene.verdict.takePath === scene.videoPath
+      ? [scene.verdict.headline, ...scene.verdict.issues.map((i) => `${i.atSec}s [${i.fixKind}] ${i.what} — ${i.fix}`)].join('\n')
+      : undefined;
+    const plan = await patchSceneFromNote({
+      note, sceneTitle: scene.title, durationSec: scene.durationSec, fields,
+      ...(verdict ? { verdictContext: verdict } : {}),
+    });
+    raw = plan.patches;
+    unaddressable = plan.unaddressable ?? [];
+    summary = plan.summary;
+  } else {
+    // Mock: append the note to the camera block so the shape of the flow is
+    // exercisable without a key. Deliberately visible as a mock.
+    raw = [{
+      field: 'cameraAndPerformance',
+      to: `${fields.cameraAndPerformance}\n\n[MOCK PATCH — no ANTHROPIC_API_KEY] ${note.trim()}`,
+      why: 'Mock patch so the re-roll flow can be exercised without an API key.',
+    }];
+    summary = 'Mock patch — set ANTHROPIC_API_KEY for a real revision.';
+  }
+
+  const patches: ScenePatch[] = raw
+    .filter((p) => isPatchableField(scene, p.field))
+    .map((p) => ({ field: p.field, from: fields[p.field] ?? '', to: p.to, why: p.why }));
+  const { scene: patched, applied, rejected } = applyScenePatches(scene, patches);
+  const unknown = raw
+    .filter((p) => !isPatchableField(scene, p.field))
+    .map((p) => ({ field: p.field, reason: 'not a field on this scene' }));
+
+  // One attached reference video is the usual case (a screen test or the
+  // clip being extended); images are token-free either way.
+  const patchedRefs = resolveReferenceTags(patched);
+  const refVideos = patchedRefs.filter((r) => r.media === 'video').length;
+  return {
+    patches: applied.map((p) => ({ ...p, sharedText: SHARED_TEXT_FIELDS.has(p.field) })),
+    rejected: [...rejected, ...unknown],
+    unaddressable,
+    summary,
+    prompt: buildScenePrompt(patched, subjects, patchedRefs),
+    estimatedCostUsd: estimateCostUsd(scene.durationSec, project.input.resolution, refVideos),
+  };
+}
+
+/**
+ * Re-roll a scene. 'as_is' sends the identical prompt again; 'note' applies an
+ * already-approved patch first. Either way this SPENDS — it is only ever
+ * reached from an explicit confirmation in the UI.
+ */
+export async function runRegenerateScene(
+  uid: string, projectId: string, sceneId: string,
+  opts: { mode: 'as_is' | 'note'; note?: string; patch?: ScenePatch[] },
+): Promise<void> {
+  const scene = await getScene(uid, projectId, sceneId);
+  let patchSummary: string[] | undefined;
+
+  if (opts.mode === 'note') {
+    if (!opts.patch?.length) {
+      throw new HttpsError('invalid-argument', 'No approved patch to apply — plan the re-roll first.');
+    }
+    const { scene: patched, applied, rejected } = applyScenePatches(scene, opts.patch);
+    if (applied.length === 0) {
+      throw new HttpsError('failed-precondition',
+        `None of the proposed changes could be applied${rejected.length ? `: ${rejected.map((r) => `${r.field} (${r.reason})`).join(', ')}` : '.'}`);
+    }
+    const write: Record<string, unknown> = { updatedAt: now() };
+    for (const p of applied) {
+      if (p.field.startsWith('stages[')) write.stages = patched.stages;
+      else write[p.field] = p.to;
+    }
+    await sceneDocRef(uid, projectId, sceneId).set(write, { merge: true });
+    patchSummary = applied.map((p) => `${fieldLabel(p.field)}: ${p.why}`);
+  }
+
+  await runGenerateScene(uid, projectId, sceneId, {
+    ...(opts.note?.trim() ? { note: opts.note.trim() } : {}),
+    ...(patchSummary ? { patchSummary } : {}),
+  });
 }

@@ -4,11 +4,12 @@ import { Field, StatusChip, Spinner, StorageVideo, StorageImg, ErrorNote } from 
 import { useStorageUrl } from '../lib/hooks';
 import type {
   ProjectDoc, SubjectDoc, SceneDoc, EnvironmentDoc, SceneStage, StitchMode,
-  PrevizFeed, Resolution,
+  PrevizFeed,
 } from '@shared/types';
 import { collections } from '@shared/types';
 import { buildScenePrompt, resolveReferenceTags } from '@shared/assemble';
 import { previzCommand, formatCameraMap } from '@shared/previz';
+import { refVideoCost } from '@shared/cost';
 
 interface Props {
   uid: string; project: ProjectDoc; scene: SceneDoc;
@@ -215,17 +216,6 @@ export default function SceneEditor({ uid, project, scene, subjects }: Props) {
 // the measured timing then rides into the prompt as text, which costs nothing
 // to send. Attaching the clip itself is the only option that costs money.
 // ---------------------------------------------------------------------------
-
-const RES_PIXELS: Record<Resolution, [number, number]> = {
-  '480p': [854, 480], '720p': [1280, 720], '1080p': [1920, 1080], '4k': [3840, 2160],
-};
-
-/** What one extra reference video adds to a generation: ≈ +1× base tokens. */
-function refVideoCost(durationSec: number, resolution: Resolution): string {
-  const [w, h] = RES_PIXELS[resolution] ?? RES_PIXELS['720p'];
-  const tokens = (w * h * durationSec * 24) / 1024;
-  return `$${((tokens / 1_000_000) * 10.7).toFixed(2)}`;
-}
 
 function PrevizPanel({ uid, project, scene }: { uid: string; project: ProjectDoc; scene: SceneDoc }) {
   const [busy, setBusy] = useState<string | null>(null);

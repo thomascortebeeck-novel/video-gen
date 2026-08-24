@@ -474,3 +474,162 @@ export async function describePrevizWithClaude(opts: {
     maxTokens: 4000,
   });
 }
+
+// ---------------------------------------------------------------------------
+// 5. Take verification (vision + transcript → scored verdict)
+// ---------------------------------------------------------------------------
+
+const VerdictSchema = z.object({
+  overall: z.number().describe('0-100 overall read of the take against its plan'),
+  call: z.enum(['ship', 'minor', 're_roll']),
+  headline: z.string().describe('one sentence a human can act on, e.g. "Holds together, but the second beat never happens"'),
+  criteria: z.array(z.object({
+    id: z.string().describe('exactly one of the criterion ids you were given'),
+    score: z.number().describe('0-100'),
+    note: z.string().describe('one line of evidence, with a timecode where relevant'),
+  })).describe('one entry per criterion you were given, in the same order, and none you were not'),
+  issues: z.array(z.object({
+    severity: z.enum(['blocker', 'major', 'minor']),
+    atSec: z.number().describe('when it happens, in seconds from the clip start'),
+    what: z.string().describe('what is wrong, in plain words'),
+    fixKind: z.enum(['edit', 'prompt', 'reference', 'accept']),
+    fix: z.string().describe('the concrete fix — an edit instruction, or the wording to change'),
+  })),
+  suggestedNote: z.string().optional()
+    .describe('only when call is re_roll: one paragraph the user can send straight back as a re-roll note'),
+});
+export type TakeVerdict = z.infer<typeof VerdictSchema>;
+
+const VERIFY_SYSTEM = `You are a post-production supervisor screening a generated take against the plan it was made from. You are given the take's frames in order with their timecodes, the plan, and — when the clip has speech — a transcript of what was actually said.
+
+Judge only what you can see and hear. Never assume a beat happened because the plan says it should; if the frames do not show it, it did not happen. Equally, do not invent problems: a take that matches its plan should score in the 90s and produce no issues at all. Most takes are mostly right, and a verdict that flags everything is as useless as one that flags nothing.
+
+Score ONLY the criteria you are given, using their exact ids, one entry each.
+
+The single most valuable thing you produce is the fixKind on every issue, because it decides whether the user spends money:
+
+- "edit" — fixable for free in the edit: dead air at either end, a shot that runs long, a music bed sitting over a line, a weak grade, framing that can be cropped, an ending that needs a fade. Prefer this whenever it is honestly true.
+- "prompt" — only new footage can fix it, and rewording the plan would get it: a beat that did not happen, an action flattened into a pose, a camera move that went the wrong way, a wrong or invented line.
+- "reference" — only new footage can fix it, and the attached material is the cause: the wrong style came through (reference images outweigh style wording in this model), a face does not match its reference, wardrobe drifted from the sheet.
+- "accept" — real but not worth a re-roll.
+
+A re-roll costs between one and seven dollars; an edit costs nothing. So route to "edit" whenever an editor could genuinely fix it, and reserve "prompt" and "reference" for what only new footage can solve. Call it "re_roll" overall only when a blocker cannot be fixed any other way.
+
+Give every issue a timecode taken from the frame labels. Write for someone who will act on this without watching the clip again.`;
+
+export interface VerifyTakeInput {
+  frames: { image: ImageInput; atSec: number }[];
+  durationSec: number;
+  plan: string;
+  criteria: { id: string; label: string; question: string }[];
+  transcript?: string;
+  plannedDialogue?: string;
+  referenceSummary?: string;
+}
+
+/**
+ * Read a finished take against its plan. Individual frames go to the model
+ * rather than the contact sheet: the sheet's tiles are too small to read
+ * on-screen text or spot a malformed hand, and per-frame labels are what let
+ * the model cite an honest timecode. The sheet is for the human.
+ */
+export async function verifyTakeWithClaude(input: VerifyTakeInput): Promise<TakeVerdict> {
+  const content: Anthropic.Messages.ContentBlockParam[] = [];
+  for (const f of input.frames) {
+    content.push({ type: 'text', text: `Frame at ${f.atSec.toFixed(1)}s:` });
+    content.push({
+      type: 'image',
+      source: { type: 'base64', media_type: f.image.mediaType, data: f.image.data.toString('base64') },
+    });
+  }
+  content.push({
+    type: 'text',
+    text: [
+      `The take is ${input.durationSec} seconds long; the frames above cover it in order.`,
+      '',
+      '=== THE PLAN THIS TAKE WAS MADE FROM ===',
+      input.plan,
+      ...(input.referenceSummary ? ['', '=== WHAT WAS ATTACHED TO THE GENERATION ===', input.referenceSummary] : []),
+      ...(input.plannedDialogue ? ['', '=== THE LINES AS PLANNED ===', input.plannedDialogue] : []),
+      ...(input.transcript
+        ? ['', '=== WHAT WAS ACTUALLY SAID (transcribed from the take) ===', input.transcript]
+        : ['', '(No transcript — judge the picture only, and do not score dialogue you cannot hear.)']),
+      '',
+      '=== SCORE EXACTLY THESE CRITERIA ===',
+      ...input.criteria.map((c) => `${c.id} (${c.label}): ${c.question}`),
+    ].join('\n'),
+  });
+  return structured({
+    system: VERIFY_SYSTEM,
+    content,
+    schema: VerdictSchema,
+    schemaName: 'take_verdict',
+    maxTokens: 6000,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 6. Re-roll notes → field-level patches
+// ---------------------------------------------------------------------------
+
+const PatchPlanSchema = z.object({
+  patches: z.array(z.object({
+    field: z.string().describe('exactly one of the patchable field paths you were given'),
+    to: z.string().describe('the COMPLETE new text for that field, not a fragment or a diff'),
+    why: z.string().describe('one line: what in the note this serves'),
+  })),
+  unaddressable: z.array(z.string()).optional()
+    .describe('parts of the note that no wording change can deliver — say so rather than pretending'),
+  summary: z.string().describe('one sentence describing the change as a whole'),
+});
+export type PatchPlan = z.infer<typeof PatchPlanSchema>;
+
+const PATCH_SYSTEM = `You are revising ONE scene of a shooting plan in response to a note from the director, so it can be generated again.
+
+You patch named fields. You never rewrite the plan. For each field you change, return its complete new text — the whole field as it should now read, not a fragment and not a diff.
+
+Rules that matter more than the note:
+
+1. Change as little as possible. A note about the third beat touches the third beat. If one field carries the note, patch one field.
+2. The identity and wardrobe text is reused VERBATIM in every other scene of this film. Rewording it is how a character starts drifting between shots, so do not touch the continuity field unless the note is explicitly about continuity, wardrobe or location.
+3. Keep the house voice of each field: actions are physical and moment-by-moment with no intent clauses ("her hand closes around the cup", never "she feels reassured"); style is named in positive terms; camera language names the move, not the lens.
+4. Be concrete about what changed. "Make it better" is not a patch — find the specific wording that produced the problem and fix that.
+5. If part of the note cannot be delivered by any wording change — it needs different reference material, a longer duration, or a different shot altogether — put it in unaddressable and explain. Say so plainly instead of writing a patch that will not work.
+
+The note may quote a verification finding. Trust the timecode in it: a beat reported missing at 6s is a beat whose stage wording was too weak, so strengthen the physical steps of that stage rather than adding new ones.`;
+
+export interface PatchSceneInput {
+  note: string;
+  sceneTitle: string;
+  durationSec: number;
+  /** field path → current text, exactly the set the model may patch */
+  fields: Record<string, string>;
+  verdictContext?: string;
+}
+
+export async function patchSceneFromNote(input: PatchSceneInput): Promise<PatchPlan> {
+  const fieldList = Object.entries(input.fields)
+    .map(([k, v]) => `--- ${k} ---\n${v || '(empty)'}`)
+    .join('\n\n');
+  return structured({
+    system: PATCH_SYSTEM,
+    content: [{
+      type: 'text',
+      text: [
+        `Scene: ${input.sceneTitle} (${input.durationSec}s)`,
+        '',
+        '=== THE NOTE ===',
+        input.note,
+        ...(input.verdictContext ? ['', '=== WHAT VERIFICATION FOUND IN THE LAST TAKE ===', input.verdictContext] : []),
+        '',
+        '=== PATCHABLE FIELDS, WITH THEIR CURRENT TEXT ===',
+        'You may patch these paths and no others.',
+        '',
+        fieldList,
+      ].join('\n'),
+    }],
+    schema: PatchPlanSchema,
+    schemaName: 'scene_patch',
+    maxTokens: 8000,
+  });
+}

@@ -134,10 +134,14 @@ export function StorageImg({ path, alt, className }: { path?: string; alt: strin
   return <img src={url} alt={alt} className={className} loading="lazy" />;
 }
 
-export function StorageVideo({ path, className }: { path?: string; className?: string }) {
+export function StorageVideo({ path, className, videoRef }: {
+  path?: string; className?: string;
+  /** Handed the element so callers can seek it — verification findings carry timecodes. */
+  videoRef?: (el: HTMLVideoElement | null) => void;
+}) {
   const url = useStorageUrl(path);
   if (!path || !url) return null;
-  return <video src={url} controls className={className} preload="metadata" />;
+  return <video ref={videoRef} src={url} controls className={className} preload="metadata" />;
 }
 
 export function StorageAudio({ path }: { path?: string }) {

@@ -105,10 +105,11 @@ export async function extractLastFrame(video: Buffer): Promise<Buffer> {
  * frames go to Claude vision to be turned into a timed camera map.
  */
 export async function extractFramesAtFps(
-  video: Buffer, fps = 1, maxFrames = 40,
+  video: Buffer, fps = 1, maxFrames = 40, format: 'png' | 'jpeg' = 'png',
 ): Promise<Buffer[]> {
   const dir = await tmpDir();
   const inFile = path.join(dir, 'in.mp4');
+  const ext = format === 'jpeg' ? 'jpg' : 'png';
   try {
     await fs.writeFile(inFile, video);
     await execFileAsync(ffmpeg(), [
@@ -116,10 +117,10 @@ export async function extractFramesAtFps(
       '-vf', `fps=${fps},scale=640:-2`,
       '-frames:v', String(maxFrames),
       '-q:v', '3',
-      path.join(dir, 'f_%03d.png'),
+      path.join(dir, `f_%03d.${ext}`),
     ], { maxBuffer: 64 * 1024 * 1024 });
     const names = (await fs.readdir(dir))
-      .filter((n) => n.startsWith('f_') && n.endsWith('.png'))
+      .filter((n) => n.startsWith('f_') && n.endsWith(`.${ext}`))
       .sort();
     return await Promise.all(names.map((n) => fs.readFile(path.join(dir, n))));
   } finally {
@@ -142,12 +143,16 @@ export async function buildContactSheet(
   const dir = await tmpDir();
   const out = path.join(dir, 'sheet.png');
   try {
+    // ffmpeg's image2 demuxer picks the decoder from the FILE EXTENSION, not
+    // the content, so a JPEG written as .png fails with "Invalid PNG
+    // signature". Name the sequence after what the bytes actually are.
+    const ext = frames[0][0] === 0xff && frames[0][1] === 0xd8 ? 'jpg' : 'png';
     await Promise.all(frames.map((f, i) =>
-      fs.writeFile(path.join(dir, `in_${String(i + 1).padStart(3, '0')}.png`), f)));
+      fs.writeFile(path.join(dir, `in_${String(i + 1).padStart(3, '0')}.${ext}`), f)));
     const grid = `scale=320:-2,pad=iw+4:ih+4:2:2:color=0x111111,tile=${cols}x${rows}`;
     const stamp = `drawtext=text='%{eif\\:n*${step}\\:d}s':x=10:y=10:fontsize=22:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=5`;
     const run = (filter: string) => execFileAsync(ffmpeg(), [
-      '-y', '-i', path.join(dir, 'in_%03d.png'),
+      '-y', '-i', path.join(dir, `in_%03d.${ext}`),
       '-vf', filter, '-frames:v', '1', out,
     ], { maxBuffer: 64 * 1024 * 1024 });
     try {
@@ -266,6 +271,63 @@ export async function ensureAudioTrack(video: Buffer): Promise<Buffer> {
       '-y', '-i', inFile, '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
       '-c:v', 'copy', '-c:a', 'aac', '-shortest', outFile,
     ]);
+    return await fs.readFile(outFile);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
+export interface MediaProbe {
+  durationSec: number;
+  width: number;
+  height: number;
+  hasAudio: boolean;
+}
+
+/**
+ * Read a clip's shape from ffmpeg's own banner. ffmpeg-static ships no
+ * ffprobe binary, and `ffmpeg -i` with no output already prints everything we
+ * need to stderr (then exits non-zero, which is why this reads the throw).
+ */
+export async function probeVideo(video: Buffer): Promise<MediaProbe> {
+  const dir = await tmpDir();
+  const inFile = path.join(dir, 'in.mp4');
+  try {
+    await fs.writeFile(inFile, video);
+    const out = await execFileAsync(ffmpeg(), ['-hide_banner', '-i', inFile], { maxBuffer: 8 * 1024 * 1024 })
+      .then((r) => `${r.stdout}${r.stderr}`)
+      .catch((e: { stdout?: string; stderr?: string }) => `${e.stdout ?? ''}${e.stderr ?? ''}`);
+    const dur = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(out);
+    const dims = /Stream #.*Video:.*?,\s*(\d+)x(\d+)/.exec(out);
+    return {
+      durationSec: dur ? Number(dur[1]) * 3600 + Number(dur[2]) * 60 + Number(dur[3]) : 0,
+      width: dims ? Number(dims[1]) : 0,
+      height: dims ? Number(dims[2]) : 0,
+      hasAudio: /Stream #.*Audio:/.test(out),
+    };
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Demux a clip's audio to mono 16 kHz MP3 for transcription. Speech-to-text
+ * gains nothing from stereo or high bitrates, and the upload is the slow part.
+ * Returns undefined for a silent clip so callers can skip the STT round trip.
+ */
+export async function extractAudio(video: Buffer): Promise<Buffer | undefined> {
+  const { hasAudio } = await probeVideo(video);
+  if (!hasAudio) return undefined;
+  const dir = await tmpDir();
+  const inFile = path.join(dir, 'in.mp4');
+  const outFile = path.join(dir, 'audio.mp3');
+  try {
+    await fs.writeFile(inFile, video);
+    await execFileAsync(ffmpeg(), [
+      '-y', '-i', inFile, '-vn',
+      '-ac', '1', '-ar', '16000',
+      '-c:a', 'libmp3lame', '-q:a', '6', outFile,
+    ], { maxBuffer: 64 * 1024 * 1024 });
     return await fs.readFile(outFile);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });

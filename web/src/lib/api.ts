@@ -9,7 +9,8 @@ import { httpsCallable } from 'firebase/functions';
 import { db, storage, functions, auth } from './firebase';
 import type {
   ProjectDoc, ProjectInput, SubjectDoc, SubjectKind, AngleSetId,
-  ScenePreviz, PipelineStepResult,
+  ScenePreviz, PipelineStepResult, ScenePatch,
+  VerifySceneRequest, PlanRegenerationRequest, RegenerateSceneRequest,
 } from '@shared/types';
 import { collections, storagePaths } from '@shared/types';
 
@@ -76,6 +77,16 @@ export async function removeDoc(path: string): Promise<void> {
 // Callables
 // ---------------------------------------------------------------------------
 
+/** Mirrors RegenerationPlan in functions/src/pipeline.ts (the web bundle must not import from functions/). */
+export interface RegenerationPlan {
+  patches: (ScenePatch & { sharedText: boolean })[];
+  rejected: { field: string; reason: string }[];
+  unaddressable: string[];
+  summary: string;
+  prompt: string;
+  estimatedCostUsd: number;
+}
+
 type Res = PipelineStepResult;
 const call = <TReq>(name: string) => {
   const fn = httpsCallable<TReq, Res>(functions, name, { timeout: 1_800_000 });
@@ -98,6 +109,17 @@ export const api = {
   ingestPreviz: call<{ projectId: string; sceneId: string }>('ingestPreviz'),
   refreshScene: call<{ projectId: string; sceneId: string }>('refreshScene'),
   assembleFinal: call<{ projectId: string }>('assembleFinal'),
+  verifyScene: call<VerifySceneRequest>('verifyScene'),
+  regenerateScene: call<RegenerateSceneRequest>('regenerateScene'),
+  /**
+   * Costs nothing: returns the patch a note would make, the prompt it would
+   * send and the price of sending it. The confirm dialog is built from this,
+   * so no re-roll is ever a surprise.
+   */
+  planRegeneration: (() => {
+    const fn = httpsCallable<PlanRegenerationRequest, RegenerationPlan>(functions, 'planRegeneration', { timeout: 300_000 });
+    return async (data: PlanRegenerationRequest): Promise<RegenerationPlan> => (await fn(data)).data;
+  })(),
   getEngineInfo: (() => {
     const fn = httpsCallable<Record<string, never>, { engine: { id: string; label: string; maxClipSeconds: number; nativeAudio: boolean; extend: boolean }; mock: boolean }>(functions, 'getEngineInfo');
     return async () => (await fn({})).data;

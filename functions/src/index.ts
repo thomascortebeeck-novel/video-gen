@@ -11,12 +11,14 @@ import {
   runGenerateEnvironment, runGenerateVoiceSample, runGenerateScene,
   runRefreshScene, runAssembleFinal, runGenerateScreenTest,
   runBuildPrevizScript, runIngestPreviz,
+  runVerifyScene, runPlanRegeneration, runRegenerateScene,
 } from './pipeline';
 import type {
   AnalyzeSubjectsRequest, PlanBriefingRequest, GenerateAnglesRequest,
   GenerateAngleImageRequest, GenerateEnvironmentRequest, GenerateSceneRequest,
   AssembleFinalRequest, GenerateVoiceSampleRequest, GenerateScreenTestRequest,
   BuildPrevizScriptRequest, IngestPrevizRequest, PipelineStepResult,
+  VerifySceneRequest, PlanRegenerationRequest, RegenerateSceneRequest,
 } from '../../shared/types';
 
 setGlobalOptions({ region: REGION, maxInstances: 10 });
@@ -116,6 +118,44 @@ export const ingestPreviz = onCall(
 export const assembleFinal = onCall(
   { secrets: ALL_SECRETS, timeoutSeconds: 1800, memory: '2GiB' },
   wrap<AssembleFinalRequest>(async (uid, d) => { await runAssembleFinal(uid, d.projectId); }),
+);
+
+/**
+ * Grade a take against its plan. Costs cents (vision + transcription) against
+ * a re-roll's dollars, so it is meant to run before the regenerate button.
+ */
+export const verifyScene = onCall(
+  { secrets: ALL_SECRETS, timeoutSeconds: 540, memory: '1GiB' },
+  wrap<VerifySceneRequest>(async (uid, d) => {
+    const { overall, call, issues } = await runVerifyScene(uid, d.projectId, d.sceneId, d.takePath);
+    return `${overall}/100 — ${issues} finding${issues === 1 ? '' : 's'}`
+      + `${call === 're_roll' ? ', a re-roll is warranted' : call === 'ship' ? ', good to ship' : ''}`;
+  }),
+);
+
+/**
+ * Work out what a re-roll note would change and what it would cost. Spends
+ * nothing and writes nothing — this is what fills the confirm dialog.
+ */
+export const planRegeneration = onCall(
+  { secrets: ALL_SECRETS, timeoutSeconds: 300, memory: '512MiB' },
+  async (request: CallableRequest<PlanRegenerationRequest>) => {
+    const uid = requireAuth(request);
+    try {
+      return await runPlanRegeneration(uid, request.data.projectId, request.data.sceneId, request.data.note);
+    } catch (e) {
+      if (e instanceof HttpsError) throw e;
+      throw new HttpsError('internal', String((e as Error).message ?? e));
+    }
+  },
+);
+
+/** Re-roll a scene, optionally applying an already-approved patch. This spends. */
+export const regenerateScene = onCall(
+  { secrets: ALL_SECRETS, timeoutSeconds: 1800, memory: '2GiB' },
+  wrap<RegenerateSceneRequest>(async (uid, d) => {
+    await runRegenerateScene(uid, d.projectId, d.sceneId, { mode: d.mode, note: d.note, patch: d.patch });
+  }),
 );
 
 /** Report which engine/providers are active (shown in the UI footer). */

@@ -13,6 +13,10 @@
  * so users can edit any field and the prompt regenerates.
  */
 
+// Type-only, so this stays erased at compile time and no runtime cycle forms
+// with verify.ts (which imports SceneDoc back from here).
+import type { SceneVerdict } from './verify';
+
 // ---------------------------------------------------------------------------
 // Generation status shared by all generated assets
 // ---------------------------------------------------------------------------
@@ -352,6 +356,33 @@ export interface ScenePreviz {
   updatedAt?: number;
 }
 
+/**
+ * One field-level change a re-roll note asks for.
+ *
+ * Notes patch named fields rather than rewriting the prompt, because the
+ * identity and wardrobe blocks are reused VERBATIM across every scene — a
+ * rewrite is how a character starts drifting between shots.
+ */
+export interface ScenePatch {
+  /** Dotted path into the scene doc: "visualStyle", "stages[2].action", "audio" */
+  field: string;
+  from: string;
+  to: string;
+  why: string;
+}
+
+/** One generated version of a scene, and why it exists. */
+export interface SceneTake {
+  videoPath: string;
+  createdAt: number;
+  /** The note that prompted this take, when it was a deliberate re-roll */
+  note?: string;
+  /** One line per field the note changed, for the take gallery */
+  patchSummary?: string[];
+  /** The verdict score this take earned, if it was verified */
+  verdictScore?: number;
+}
+
 export interface SceneDoc {
   id: string;
   index: number;
@@ -414,8 +445,15 @@ export interface SceneDoc {
   };
   /** Storage path of the generated clip */
   videoPath?: string;
-  /** Previous takes kept for comparison */
-  versions?: { videoPath: string; createdAt: number; note?: string }[];
+  /** Previous takes kept for comparison, oldest first */
+  versions?: SceneTake[];
+
+  /**
+   * The latest verification of this scene's take. Reading a take costs cents
+   * against a re-roll's dollars, so it runs before anyone reaches for the
+   * regenerate button — and each finding says which lever fixes it.
+   */
+  verdict?: SceneVerdict;
 
   createdAt: number;
   updatedAt: number;
@@ -564,6 +602,17 @@ export interface ExtendSceneRequest { projectId: string; sceneId: string; extraS
 export interface BuildPrevizScriptRequest { projectId: string; sceneId: string; }
 export interface IngestPrevizRequest { projectId: string; sceneId: string; }
 export interface AssembleFinalRequest { projectId: string; }
+export interface VerifySceneRequest { projectId: string; sceneId: string; takePath?: string; }
+/** Costs nothing: works out what a note would change, so the diff and the price can be shown first. */
+export interface PlanRegenerationRequest { projectId: string; sceneId: string; note: string; }
+export interface RegenerateSceneRequest {
+  projectId: string;
+  sceneId: string;
+  /** 'as_is' re-rolls the identical prompt; 'note' applies an approved patch first. */
+  mode: 'as_is' | 'note';
+  note?: string;
+  patch?: ScenePatch[];
+}
 export interface GenerateVoiceSampleRequest { projectId: string; subjectId: string; }
 
 export interface PipelineStepResult {
@@ -687,6 +736,8 @@ export const storagePaths = {
     `users/${uid}/projects/${projectId}/previz/${sceneId}/v${version}.mp4`,
   previzSheet: (uid: string, projectId: string, sceneId: string) =>
     `users/${uid}/projects/${projectId}/previz/${sceneId}/contact_sheet.png`,
+  verifySheet: (uid: string, projectId: string, sceneId: string, version: number) =>
+    `users/${uid}/projects/${projectId}/scenes/${sceneId}/verify/v${version}_sheet.png`,
   voiceSample: (uid: string, projectId: string, subjectId: string) =>
     `users/${uid}/projects/${projectId}/audio/${subjectId}_voice_sample.mp3`,
   finalVideo: (uid: string, projectId: string, version: number) =>
