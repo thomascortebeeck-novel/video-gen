@@ -1,33 +1,255 @@
 @import "tailwindcss";
 
-@theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+/* ---------------------------------------------------------------------------
+   Design tokens.
+
+   Every colour in the app comes from one of these semantic names — never from a
+   raw Tailwind ramp — so both themes stay in sync and neither can strand a
+   colour. `@theme inline` makes Tailwind emit `var(--c-*)` straight into the
+   utility, which is what lets the theme swap at runtime.
+
+   The palette is a shooting crew's two rooms: a dark grading suite (default at
+   night / on a dark OS) and a daylight review room. The accent is tungsten
+   amber — the light you shoot under; the secondary is a cool screen blue.
+--------------------------------------------------------------------------- */
+
+@theme inline {
+  --color-ground: var(--c-ground);
+  --color-surface: var(--c-surface);
+  --color-surface-2: var(--c-surface-2);
+  --color-line: var(--c-line);
+  --color-line-soft: var(--c-line-soft);
+
+  --color-ink: var(--c-ink);
+  --color-ink-2: var(--c-ink-2);
+  --color-muted: var(--c-muted);
+  --color-faint: var(--c-faint);
+
+  --color-accent: var(--c-accent);
+  --color-accent-ink: var(--c-accent-ink);
+  --color-accent-soft: var(--c-accent-soft);
+
+  --color-cool: var(--c-cool);
+  --color-cool-soft: var(--c-cool-soft);
+  --color-ok: var(--c-ok);
+  --color-ok-soft: var(--c-ok-soft);
+  --color-bad: var(--c-bad);
+  --color-bad-soft: var(--c-bad-soft);
+
+  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-html, body, #root {
-  height: 100%;
+/* Daylight review room — the base state. */
+:root {
+  color-scheme: light;
+  --c-ground: #F7F6F3;
+  --c-surface: #FFFFFF;
+  --c-surface-2: #F0EFEA;
+  --c-line: #E3E1DA;
+  --c-line-soft: #EDEBE5;
+
+  --c-ink: #15161C;
+  --c-ink-2: #4A4C57;
+  --c-muted: #767988;
+  --c-faint: #9B9DA8;
+
+  --c-accent: #A96A05;
+  --c-accent-ink: #FFFFFF;
+  --c-accent-soft: #FAEFDA;
+
+  --c-cool: #2F63A8;
+  --c-cool-soft: #E7EFFA;
+  --c-ok: #1C7247;
+  --c-ok-soft: #E1F2E9;
+  --c-bad: #AF262B;
+  --c-bad-soft: #FAE6E6;
+
+  --shadow-card: 0 1px 2px rgb(21 22 28 / 0.04), 0 8px 20px -14px rgb(21 22 28 / 0.22);
+  --shadow-pop: 0 2px 6px rgb(21 22 28 / 0.06), 0 18px 40px -22px rgb(21 22 28 / 0.35);
 }
+
+/* Grading suite. Declared twice: once for an un-stamped document following the
+   OS, once for an explicit choice — so the toggle wins in both directions. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --c-ground: #0D0E13;
+    --c-surface: #15171F;
+    --c-surface-2: #1D202B;
+    --c-line: #282C39;
+    --c-line-soft: #1F2230;
+
+    --c-ink: #ECEDF2;
+    --c-ink-2: #B4B8C6;
+    --c-muted: #7C8294;
+    --c-faint: #5B6072;
+
+    --c-accent: #F0A93C;
+    --c-accent-ink: #17120A;
+    --c-accent-soft: #2C2110;
+
+    --c-cool: #8CB4EE;
+    --c-cool-soft: #17243A;
+    --c-ok: #5DC98F;
+    --c-ok-soft: #10291D;
+    --c-bad: #F0797C;
+    --c-bad-soft: #2C1417;
+
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4), 0 10px 26px -18px rgb(0 0 0 / 0.8);
+    --shadow-pop: 0 2px 8px rgb(0 0 0 / 0.5), 0 24px 50px -26px rgb(0 0 0 / 0.9);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --c-ground: #0D0E13;
+  --c-surface: #15171F;
+  --c-surface-2: #1D202B;
+  --c-line: #282C39;
+  --c-line-soft: #1F2230;
+
+  --c-ink: #ECEDF2;
+  --c-ink-2: #B4B8C6;
+  --c-muted: #7C8294;
+  --c-faint: #5B6072;
+
+  --c-accent: #F0A93C;
+  --c-accent-ink: #17120A;
+  --c-accent-soft: #2C2110;
+
+  --c-cool: #8CB4EE;
+  --c-cool-soft: #17243A;
+  --c-ok: #5DC98F;
+  --c-ok-soft: #10291D;
+  --c-bad: #F0797C;
+  --c-bad-soft: #2C1417;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4), 0 10px 26px -18px rgb(0 0 0 / 0.8);
+  --shadow-pop: 0 2px 8px rgb(0 0 0 / 0.5), 0 24px 50px -26px rgb(0 0 0 / 0.9);
+}
+
+/* --------------------------------------------------------------------------- */
+
+html, body, #root { height: 100%; }
 
 body {
-  @apply bg-zinc-950 text-zinc-200 antialiased;
+  background: var(--c-ground);
+  color: var(--c-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-.card {
-  @apply rounded-xl border border-zinc-800 bg-zinc-900/60 backdrop-blur;
+h1, h2, h3 { text-wrap: balance; }
+
+::selection { background: var(--c-accent-soft); color: var(--c-ink); }
+
+:where(a, button, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
-.btn {
-  @apply inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors
-         disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer;
+/* Digits that sit in columns should not dance as they change.
+   Registered as a utility so it also works inside @apply. */
+@utility tnum {
+  font-variant-numeric: tabular-nums;
 }
-.btn-primary { @apply bg-amber-500 text-zinc-950 hover:bg-amber-400; }
-.btn-ghost { @apply border border-zinc-700 text-zinc-300 hover:bg-zinc-800; }
-.btn-danger { @apply border border-red-900 text-red-400 hover:bg-red-950; }
 
-.input {
-  @apply w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-200
-         placeholder-zinc-600 focus:border-amber-500 focus:outline-none;
+@layer components {
+  /* ---- surfaces ------------------------------------------------------------ */
+
+  .card {
+    @apply rounded-xl border border-line bg-surface;
+    box-shadow: var(--shadow-card);
+  }
+
+  .card-flush { @apply rounded-xl border border-line bg-surface overflow-hidden; box-shadow: var(--shadow-card); }
+
+  /* A quiet inset panel for nested detail (sheets, generation details). */
+  .well {
+    @apply rounded-lg border border-line;
+    background: color-mix(in srgb, var(--c-surface-2) 55%, transparent);
+  }
+
+  /* ---- buttons ------------------------------------------------------------- */
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium
+           cursor-pointer whitespace-nowrap
+           disabled:opacity-45 disabled:cursor-not-allowed;
+    transition: background-color .14s ease, border-color .14s ease, color .14s ease, transform .1s ease;
+  }
+  .btn:active:not(:disabled) { transform: translateY(0.5px); }
+
+  .btn-primary { @apply bg-accent text-accent-ink; }
+  .btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--c-accent) 86%, var(--c-ink)); }
+
+  .btn-ghost { @apply border border-line text-ink-2 bg-transparent; }
+  .btn-ghost:hover:not(:disabled) { @apply bg-surface-2 text-ink; }
+
+  .btn-quiet { @apply text-muted bg-transparent px-2; }
+  .btn-quiet:hover:not(:disabled) { @apply text-ink; }
+
+  .btn-danger { @apply border border-bad/40 text-bad bg-transparent; }
+  .btn-danger:hover:not(:disabled) { background: var(--c-bad-soft); }
+
+  .btn-sm { @apply px-2.5 py-1 text-xs; }
+
+  /* ---- forms --------------------------------------------------------------- */
+
+  .input {
+    @apply w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink
+           placeholder:text-faint;
+    transition: border-color .14s ease, box-shadow .14s ease;
+  }
+  .input:focus {
+    @apply outline-none border-accent;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--c-accent) 18%, transparent);
+  }
+  textarea.input { @apply leading-relaxed; }
+
+  .label {
+    @apply block font-mono text-[10.5px] font-medium uppercase tracking-[0.12em] text-muted mb-1.5;
+  }
+
+  /* ---- chips --------------------------------------------------------------- */
+
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium
+           whitespace-nowrap;
+  }
+  .chip-neutral { @apply bg-surface-2 text-muted; }
+  .chip-mono    { @apply bg-surface-2 text-ink-2 font-mono text-[10.5px] tracking-tight tnum; }
+  .chip-accent  { @apply bg-accent-soft text-accent; }
+  .chip-cool    { @apply bg-cool-soft text-cool; }
+  .chip-ok      { @apply bg-ok-soft text-ok; }
+  .chip-bad     { @apply bg-bad-soft text-bad; }
+
+  /* ---- section heading ----------------------------------------------------- */
+
+  .eyebrow {
+    @apply font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-muted;
+  }
+
+  /* ---- prompt / code ------------------------------------------------------- */
+
+  .codeblock {
+    @apply rounded-lg border border-line p-3 font-mono text-[11.5px] leading-relaxed text-ink-2
+           whitespace-pre-wrap overflow-auto;
+    background: color-mix(in srgb, var(--c-surface-2) 60%, transparent);
+  }
+
+  /* ---- misc ---------------------------------------------------------------- */
+
+  .hairline { @apply h-px flex-1 bg-line; }
 }
-.label { @apply block text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-1; }
 
-.chip { @apply inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
