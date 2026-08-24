@@ -50,8 +50,14 @@ FIREBASE="npx --prefix $REPO_DIR firebase"
 ACTIVE_ACCOUNT=$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null || true)
 [ -n "$ACTIVE_ACCOUNT" ] || die "Not logged in to gcloud. Run:  gcloud auth login"
 ok "gcloud account: $ACTIVE_ACCOUNT"
-$FIREBASE login:list 2>/dev/null | grep -q "@" || die "Not logged in to Firebase CLI. Run:  npx firebase login"
-ok "firebase CLI logged in"
+# Only the full setup needs firebase-tools (registering the web app, adding
+# Firebase to the project). --secrets-only talks to Secret Manager through
+# gcloud alone, so don't make it wait on a CLI login it never uses — the org's
+# session policy expires that login within hours anyway.
+if [ "$SECRETS_ONLY" = false ]; then
+  $FIREBASE login:list 2>/dev/null | grep -q "@" || die "Not logged in to Firebase CLI. Run:  npx firebase login"
+  ok "firebase CLI logged in"
+fi
 
 TOKEN=$(gcloud auth print-access-token)
 
