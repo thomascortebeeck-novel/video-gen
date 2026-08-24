@@ -82,13 +82,13 @@ export default function ProductionView({ project, subjects, scenes, environments
     <div>
       <Section
         title="Scenes"
-        subtitle="Scenes generate in order — frame-bridged and extended scenes consume the previous scene's output. Each clip lands here for review; regenerate any take you don't like."
+        subtitle="Scenes generate in order — frame-bridged and extended scenes consume the previous scene's output. Every finished take is graded against its plan automatically; findings say whether a fix is free in the edit or needs new footage."
         right={
           allDone ? (
             <div className="flex items-center gap-2">
               {unverified.length > 0 && (
                 <button className="btn btn-ghost" disabled={batchRunning} onClick={() => void verifyAll()}>
-                  {batchRunning ? <><Spinner /> Verifying…</> : `Verify ${unverified.length} take${unverified.length === 1 ? '' : 's'} — cents`}
+                  {batchRunning ? <><Spinner /> Verifying…</> : `Grade ${unverified.length} older take${unverified.length === 1 ? '' : 's'} — cents`}
                 </button>
               )}
               <span className="chip chip-ok">all {scenes.length} scenes generated</span>
@@ -374,7 +374,17 @@ function VerdictPanel({ scene, onSeek, onUseNote }: {
   if (!v) return null;
 
   if (v.status === 'running') {
-    return <div className="well mt-3 flex items-center gap-2 p-4 text-xs text-muted"><Spinner /> Reading the take against the plan…</div>;
+    // Verification runs inside the generation call, so if that call died the
+    // status never advances. The take itself is unaffected — say so rather
+    // than spinning forever.
+    const stalled = Date.now() - v.checkedAt > 10 * 60 * 1000;
+    return (
+      <div className="well mt-3 flex items-center gap-2 p-4 text-xs text-muted">
+        {stalled
+          ? <span className="text-ink-2">Verification was interrupted — the take is fine. Press “Verify take” to read it again.</span>
+          : <><Spinner /> Reading the take against the plan…</>}
+      </div>
+    );
   }
   if (v.status === 'failed') {
     return <div className="mt-3"><ErrorNote error={v.error ?? 'Verification failed.'} /></div>;

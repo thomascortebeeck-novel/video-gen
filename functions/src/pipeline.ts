@@ -1107,12 +1107,42 @@ export async function runGenerateScene(
       },
       updatedAt: now(),
     }, { merge: true });
+
+    // The take is already saved and marked complete above, so it shows in the
+    // UI immediately and the verdict lands a moment later.
+    await autoVerify(uid, projectId, sceneId, scene.title);
   } catch (e) {
     await sceneRef.set({
       generation: { ...scene.generation, status: 'failed', error: String((e as Error).message ?? e) },
       updatedAt: now(),
     }, { merge: true });
     throw e;
+  }
+}
+
+/**
+ * Grade a freshly generated take without being able to break the generation
+ * that produced it.
+ *
+ * Verification is worth doing by default — cents against a re-roll's dollars —
+ * but it is strictly a read of work already paid for. So a failure here is
+ * logged and swallowed: a take that generated fine must never be reported as
+ * failed because the grader could not reach an API. Skipped without a director
+ * key, since an automatic mock verdict on every scene is noise, not signal
+ * (the manual button still runs and labels itself as mock).
+ */
+async function autoVerify(uid: string, projectId: string, sceneId: string, title: string): Promise<void> {
+  if (!anthropicConfigured() || isForcedMock()) return;
+  try {
+    await runVerifyScene(uid, projectId, sceneId);
+  } catch (e) {
+    // Nothing in here may throw: this runs inside runGenerateScene's try, so
+    // an escaping error would mark a paid, successful generation as failed.
+    console.warn(`Auto-verification failed for "${title}" (the take itself is fine):`, e);
+    try {
+      await setProgress(uid, projectId, 'scene',
+        `${title}: generated. Automatic verification could not run — use "Verify take" to retry.`);
+    } catch { /* the progress line is cosmetic */ }
   }
 }
 
@@ -1141,6 +1171,8 @@ export async function runRefreshScene(uid: string, projectId: string, sceneId: s
       generation: { ...scene.generation, status: 'completed', completedAt: now() },
       updatedAt: now(),
     }, { merge: true });
+    // A recovered take is still a new take — grade it like any other.
+    await autoVerify(uid, projectId, sceneId, scene.title);
     return 'Scene video retrieved and saved.';
   }
   if (status.state === 'failed') {

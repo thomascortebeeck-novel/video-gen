@@ -88,7 +88,8 @@ export const generateScene = onCall(
 
 /** Re-check a stuck scene job and finalize it if the provider finished. */
 export const refreshScene = onCall(
-  { secrets: ALL_SECRETS, timeoutSeconds: 300, memory: '1GiB' },
+  // 540s, not 300s: recovering a take now verifies it too.
+  { secrets: ALL_SECRETS, timeoutSeconds: 540, memory: '1GiB' },
   wrap<GenerateSceneRequest>(async (uid, d) => runRefreshScene(uid, d.projectId, d.sceneId)),
 );
 
