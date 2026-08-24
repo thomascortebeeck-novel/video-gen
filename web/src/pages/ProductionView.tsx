@@ -3,15 +3,18 @@ import { api } from '../lib/api';
 import { Section, Spinner, StatusChip, StorageImg, StorageVideo, ErrorNote } from '../components/ui';
 import { useStorageUrl } from '../lib/hooks';
 import type { ProjectDoc, SubjectDoc, SceneDoc, EnvironmentDoc } from '@shared/types';
+import { resolveReferenceTags } from '@shared/assemble';
 
 interface Props {
   uid: string; project: ProjectDoc; subjects: SubjectDoc[];
   scenes: SceneDoc[]; environments: EnvironmentDoc[];
 }
 
-export default function ProductionView({ project, scenes }: Props) {
+export default function ProductionView({ project, subjects, scenes, environments }: Props) {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [batchRunning, setBatchRunning] = useState(false);
+  const [openDetails, setOpenDetails] = useState<Record<string, boolean>>({});
+  const [shownTake, setShownTake] = useState<Record<string, string>>({});
   const finalUrl = useStorageUrl(project.finalVideoPath);
 
   const track = async (key: string, fn: () => Promise<unknown>) => {
@@ -95,13 +98,36 @@ export default function ProductionView({ project, scenes }: Props) {
                   )}
                   {scene.videoPath && (
                     <div className="min-w-64 flex-1">
-                      <StorageVideo path={scene.videoPath} className="max-h-80 w-full rounded-lg" />
+                      <StorageVideo key={shownTake[scene.id] ?? scene.videoPath}
+                        path={shownTake[scene.id] ?? scene.videoPath} className="max-h-80 w-full rounded-lg" />
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        {(scene.versions ?? []).map((v, i) => {
+                          const active = (shownTake[scene.id] ?? scene.videoPath) === v.videoPath;
+                          const isLatest = v.videoPath === scene.videoPath;
+                          return (
+                            <button key={v.videoPath} title={v.note ?? undefined}
+                              className={`chip ${active ? 'bg-amber-500/20 text-amber-200' : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'}`}
+                              onClick={() => setShownTake((s) => ({ ...s, [scene.id]: v.videoPath }))}>
+                              Take {i + 1}{isLatest ? ' · active' : ''}
+                            </button>
+                          );
+                        })}
+                        <button className="ml-auto text-xs text-amber-400 hover:text-amber-300"
+                          onClick={() => setOpenDetails((d) => ({ ...d, [scene.id]: !d[scene.id] }))}>
+                          {openDetails[scene.id] ? 'Hide generation details' : 'How was this generated?'}
+                        </button>
+                      </div>
                       {(scene.versions?.length ?? 0) > 1 && (
-                        <p className="mt-1 text-[11px] text-zinc-600">{scene.versions!.length} takes generated — latest shown</p>
+                        <p className="mt-1 text-[11px] text-zinc-600">
+                          {scene.versions!.length} takes generated — the newest is used in the final film.
+                        </p>
                       )}
                     </div>
                   )}
                 </div>
+                {openDetails[scene.id] && (
+                  <GenerationDetails scene={scene} subjects={subjects} environments={environments} />
+                )}
               </div>
             );
           })}
@@ -132,6 +158,85 @@ export default function ProductionView({ project, scenes }: Props) {
           )}
         </div>
       </Section>
+    </div>
+  );
+}
+
+/**
+ * "How was this generated?" — the exact inputs behind a take: every reference
+ * with its @tag and what the model was told to take from it, the engine
+ * parameters, and the assembled prompt.
+ */
+function GenerationDetails({ scene, subjects, environments }: {
+  scene: SceneDoc; subjects: SubjectDoc[]; environments: EnvironmentDoc[];
+}) {
+  const gen = scene.generation;
+  const refs = resolveReferenceTags(scene);
+  const assetFor = (r: ReturnType<typeof resolveReferenceTags>[number]) => {
+    if (r.kind === 'subject_video') {
+      const s = subjects.find((x) => x.id === r.subjectId);
+      return { label: `${s?.name ?? r.subjectId} — screen test`, videoPath: s?.screenTest?.videoPath };
+    }
+    if (r.kind === 'subject_angle') {
+      const s = subjects.find((x) => x.id === r.subjectId);
+      const a = s?.angles.find((x) => x.id === r.angleId);
+      return { label: `${s?.name ?? r.subjectId} — ${a?.label ?? r.angleId}`, imagePath: a?.imagePath };
+    }
+    if (r.kind === 'subject_upload') {
+      const s = subjects.find((x) => x.id === r.subjectId);
+      return { label: `${s?.name ?? r.subjectId} — uploaded image`, imagePath: s?.sourceImagePaths?.[0] };
+    }
+    if (r.kind === 'environment') {
+      const e = environments.find((x) => x.id === r.envId);
+      return { label: e?.name ?? r.envId ?? 'environment', imagePath: e?.imagePath };
+    }
+    if (r.kind === 'bridge_frame') {
+      return { label: 'Bridge frame (previous scene\'s last frame)', imagePath: scene.stitching.bridgeFramePath };
+    }
+    return { label: r.kind };
+  };
+
+  return (
+    <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950/60 p-4">
+      <div className="mb-3 flex flex-wrap gap-2 text-[11px] text-zinc-400">
+        <span className="chip bg-zinc-800">{gen.params?.model ?? 'engine n/a'}</span>
+        <span className="chip bg-zinc-800">{scene.durationSec}s · {gen.params?.resolution ?? '—'} · {gen.params?.aspectRatio ?? '—'}</span>
+        <span className="chip bg-zinc-800">stitch: {scene.stitching.mode.replace('_', ' ')}</span>
+        {gen.provider && <span className="chip bg-zinc-800">provider: {gen.provider}</span>}
+        {gen.jobId && <span className="chip bg-zinc-800">job: {gen.jobId}</span>}
+        {gen.completedAt && <span className="chip bg-zinc-800">{new Date(gen.completedAt).toLocaleString()}</span>}
+      </div>
+
+      <p className="label">References — what the model was given, bound to its tag</p>
+      {refs.length === 0 ? (
+        <p className="text-xs text-zinc-600">No references — generated from the prompt alone.</p>
+      ) : (
+        <div className="mt-1 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {refs.map((r) => {
+            const a = assetFor(r);
+            return (
+              <div key={r.assignedTag} className="flex gap-2 rounded-lg border border-zinc-800 p-2">
+                <div className="w-20 shrink-0">
+                  {a.videoPath
+                    ? <StorageVideo path={a.videoPath} className="w-full rounded" />
+                    : <StorageImg path={a.imagePath} alt={a.label} className="aspect-square w-full rounded object-cover" />}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-semibold text-amber-300">{r.assignedTag}</p>
+                  <p className="truncate text-[11px] text-zinc-300" title={a.label}>{a.label}</p>
+                  <p className="mt-0.5 text-[10px] leading-snug text-zinc-500">{r.use}</p>
+                  {r.ignore && <p className="mt-0.5 text-[10px] leading-snug text-zinc-600">Ignore: {r.ignore}</p>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <p className="label mt-4">Assembled prompt — sent to the engine verbatim</p>
+      <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-lg bg-zinc-900 p-3 text-[11px] leading-relaxed text-zinc-300">
+        {scene.assembledPrompt ?? 'Not stored yet — generate this scene to capture its prompt.'}
+      </pre>
     </div>
   );
 }

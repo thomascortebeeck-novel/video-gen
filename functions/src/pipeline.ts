@@ -718,7 +718,12 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
     if (missing.length > 0 && !videoMock) {
       throw new HttpsError('failed-precondition', `Missing reference assets: ${missing.join('; ')}. Generate them on the briefing page first.`);
     }
-    let refs = retag(rawRefs);
+    // In extend mode the source clip already carries every character's
+    // identity and voice, and the adapters attach exactly one reference_video
+    // (the clip being extended) — so screen-test refs would be named in the
+    // prompt but never sent. Drop them here, before the prompt is built, so
+    // the tag list and the payload can never drift apart.
+    let refs = retag(extendVideoUrl ? rawRefs.filter((r) => r.kind !== 'subject_video') : rawRefs);
     let prompt = buildScenePrompt(scene, subjects, refs);
     await sceneRef.set({ assembledPrompt: prompt, updatedAt: now() }, { merge: true });
 
