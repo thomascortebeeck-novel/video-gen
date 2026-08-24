@@ -1,6 +1,8 @@
 node_modules/
 dist/
-lib/
+# functions' TypeScript build output. Must NOT be a bare `lib/` — that also
+# matches web/src/lib, which is application source.
+functions/lib/
 .env
 .env.*
 !.env.example
