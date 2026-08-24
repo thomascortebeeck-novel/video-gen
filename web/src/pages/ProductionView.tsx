@@ -4,6 +4,7 @@ import { Section, Spinner, StatusChip, StorageImg, StorageVideo, ErrorNote } fro
 import { useStorageUrl } from '../lib/hooks';
 import type { ProjectDoc, SubjectDoc, SceneDoc, EnvironmentDoc } from '@shared/types';
 import { resolveReferenceTags } from '@shared/assemble';
+import { formatCameraMap } from '@shared/previz';
 
 interface Props {
   uid: string; project: ProjectDoc; subjects: SubjectDoc[];
@@ -47,10 +48,14 @@ export default function ProductionView({ project, subjects, scenes, environments
         title="Scenes"
         subtitle="Scenes generate in order — frame-bridged and extended scenes consume the previous scene's output. Each clip lands here for review; regenerate any take you don't like."
         right={
-          <button className="btn btn-primary" disabled={batchRunning || remaining.length === 0}
-            onClick={() => void generateAllRemaining()}>
-            {batchRunning ? <><Spinner /> Generating {scenes.length - remaining.length + 1}/{scenes.length}…</> : `Generate all remaining (${remaining.length})`}
-          </button>
+          allDone ? <span className="chip chip-ok">all {scenes.length} scenes generated</span> : (
+            <button className="btn btn-primary" disabled={batchRunning}
+              onClick={() => void generateAllRemaining()}>
+              {batchRunning
+                ? <><Spinner /> Generating {scenes.length - remaining.length + 1}/{scenes.length}…</>
+                : `Generate all remaining (${remaining.length})`}
+            </button>
+          )
         }
       >
         <div className="space-y-3">
@@ -61,10 +66,10 @@ export default function ProductionView({ project, subjects, scenes, environments
             return (
               <div key={scene.id} className="card p-4">
                 <div className="flex flex-wrap items-center gap-3">
-                  <span className="text-sm font-semibold text-zinc-500">#{scene.index + 1}</span>
-                  <h3 className="font-medium text-zinc-100">{scene.title}</h3>
-                  <span className="chip bg-zinc-800 text-zinc-400">{scene.durationSec}s</span>
-                  <span className="chip bg-zinc-800 text-amber-300" title={scene.stitching.notes}>
+                  <span className="text-sm font-semibold text-muted">#{scene.index + 1}</span>
+                  <h3 className="font-medium text-ink">{scene.title}</h3>
+                  <span className="chip chip-mono">{scene.durationSec}s</span>
+                  <span className="chip chip-accent" title={scene.stitching.notes}>
                     {scene.stitching.mode.replace('_', ' ')}
                   </span>
                   <StatusChip status={scene.generation.status} />
@@ -75,17 +80,17 @@ export default function ProductionView({ project, subjects, scenes, environments
                         {busy[`refresh_${scene.id}`] ? <Spinner /> : '↻ Refresh status'}
                       </button>
                     )}
-                    <button className="btn btn-primary" disabled={busy[`gen_${scene.id}`] || batchRunning || blocked || scene.generation.status === 'generating'}
+                    <button className="btn btn-ghost" disabled={busy[`gen_${scene.id}`] || batchRunning || blocked || scene.generation.status === 'generating'}
                       title={blocked ? 'Generate the previous scene first (this one continues from it)' : undefined}
                       onClick={() => void track(`gen_${scene.id}`, () => api.generateScene({ projectId: project.id, sceneId: scene.id }))}>
                       {busy[`gen_${scene.id}`] ? <><Spinner /> Generating…</> : scene.videoPath ? '↻ Regenerate' : blocked ? 'Waiting for previous' : 'Generate scene'}
                     </button>
                   </div>
                 </div>
-                <p className="mt-1 text-xs text-zinc-500">{scene.beatSummary}</p>
+                <p className="mt-1 text-xs text-muted">{scene.beatSummary}</p>
                 <ErrorNote error={scene.generation.status === 'failed' ? scene.generation.error : undefined} />
                 {scene.generation.moderationNote && (
-                  <p className="mt-2 rounded-lg border border-amber-900/60 bg-amber-950/30 p-2 text-xs text-amber-200/90">
+                  <p className="mt-2 rounded-lg border border-accent/40 bg-accent-soft p-2 text-xs text-accent">
                     {scene.generation.moderationNote}
                   </p>
                 )}
@@ -106,19 +111,19 @@ export default function ProductionView({ project, subjects, scenes, environments
                           const isLatest = v.videoPath === scene.videoPath;
                           return (
                             <button key={v.videoPath} title={v.note ?? undefined}
-                              className={`chip ${active ? 'bg-amber-500/20 text-amber-200' : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'}`}
+                              className={`chip ${active ? 'bg-accent-soft text-accent' : 'bg-surface-2 text-ink-2 hover:text-ink'}`}
                               onClick={() => setShownTake((s) => ({ ...s, [scene.id]: v.videoPath }))}>
                               Take {i + 1}{isLatest ? ' · active' : ''}
                             </button>
                           );
                         })}
-                        <button className="ml-auto text-xs text-amber-400 hover:text-amber-300"
+                        <button className="ml-auto btn btn-quiet btn-sm text-accent"
                           onClick={() => setOpenDetails((d) => ({ ...d, [scene.id]: !d[scene.id] }))}>
                           {openDetails[scene.id] ? 'Hide generation details' : 'How was this generated?'}
                         </button>
                       </div>
                       {(scene.versions?.length ?? 0) > 1 && (
-                        <p className="mt-1 text-[11px] text-zinc-600">
+                        <p className="mt-1 text-[11px] text-faint">
                           {scene.versions!.length} takes generated — the newest is used in the final film.
                         </p>
                       )}
@@ -193,39 +198,46 @@ function GenerationDetails({ scene, subjects, environments }: {
     if (r.kind === 'bridge_frame') {
       return { label: 'Bridge frame (previous scene\'s last frame)', imagePath: scene.stitching.bridgeFramePath };
     }
+    if (r.kind === 'camera_previz') {
+      // The previz reaches the model either as its contact sheet or as the
+      // clip itself, depending on the scene's feed mode.
+      return scene.previz?.feed === 'attach_video'
+        ? { label: 'Camera previz — the move, as a clip', videoPath: scene.previz?.videoPath }
+        : { label: 'Camera previz — contact sheet of the move', imagePath: scene.previz?.contactSheetPath };
+    }
     return { label: r.kind };
   };
 
   return (
-    <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950/60 p-4">
-      <div className="mb-3 flex flex-wrap gap-2 text-[11px] text-zinc-400">
-        <span className="chip bg-zinc-800">{gen.params?.model ?? 'engine n/a'}</span>
-        <span className="chip bg-zinc-800">{scene.durationSec}s · {gen.params?.resolution ?? '—'} · {gen.params?.aspectRatio ?? '—'}</span>
-        <span className="chip bg-zinc-800">stitch: {scene.stitching.mode.replace('_', ' ')}</span>
-        {gen.provider && <span className="chip bg-zinc-800">provider: {gen.provider}</span>}
-        {gen.jobId && <span className="chip bg-zinc-800">job: {gen.jobId}</span>}
-        {gen.completedAt && <span className="chip bg-zinc-800">{new Date(gen.completedAt).toLocaleString()}</span>}
+    <div className="well mt-3 p-4">
+      <div className="mb-3 flex flex-wrap gap-2 text-[11px] text-ink-2">
+        <span className="chip chip-mono">{gen.params?.model ?? 'engine n/a'}</span>
+        <span className="chip chip-mono">{scene.durationSec}s · {gen.params?.resolution ?? '—'} · {gen.params?.aspectRatio ?? '—'}</span>
+        <span className="chip chip-mono">stitch: {scene.stitching.mode.replace('_', ' ')}</span>
+        {gen.provider && <span className="chip chip-mono">provider: {gen.provider}</span>}
+        {gen.jobId && <span className="chip chip-mono">job: {gen.jobId}</span>}
+        {gen.completedAt && <span className="chip chip-mono">{new Date(gen.completedAt).toLocaleString()}</span>}
       </div>
 
       <p className="label">References — what the model was given, bound to its tag</p>
       {refs.length === 0 ? (
-        <p className="text-xs text-zinc-600">No references — generated from the prompt alone.</p>
+        <p className="text-xs text-faint">No references — generated from the prompt alone.</p>
       ) : (
         <div className="mt-1 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {refs.map((r) => {
             const a = assetFor(r);
             return (
-              <div key={r.assignedTag} className="flex gap-2 rounded-lg border border-zinc-800 p-2">
+              <div key={r.assignedTag} className="flex gap-2 rounded-lg border border-line bg-surface p-2">
                 <div className="w-20 shrink-0">
                   {a.videoPath
                     ? <StorageVideo path={a.videoPath} className="w-full rounded" />
                     : <StorageImg path={a.imagePath} alt={a.label} className="aspect-square w-full rounded object-cover" />}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-[11px] font-semibold text-amber-300">{r.assignedTag}</p>
-                  <p className="truncate text-[11px] text-zinc-300" title={a.label}>{a.label}</p>
-                  <p className="mt-0.5 text-[10px] leading-snug text-zinc-500">{r.use}</p>
-                  {r.ignore && <p className="mt-0.5 text-[10px] leading-snug text-zinc-600">Ignore: {r.ignore}</p>}
+                  <p className="text-[11px] font-semibold text-accent">{r.assignedTag}</p>
+                  <p className="truncate text-[11px] text-ink-2" title={a.label}>{a.label}</p>
+                  <p className="mt-0.5 text-[10px] leading-snug text-muted">{r.use}</p>
+                  {r.ignore && <p className="mt-0.5 text-[10px] leading-snug text-faint">Ignore: {r.ignore}</p>}
                 </div>
               </div>
             );
@@ -233,8 +245,15 @@ function GenerationDetails({ scene, subjects, environments }: {
         </div>
       )}
 
+      {scene.previz?.cameraMap && scene.previz.cameraMap.length > 0 && (
+        <>
+          <p className="label mt-4">Camera map — measured from the Blender previz, sent as text (free)</p>
+          <pre className="codeblock max-h-48">{formatCameraMap(scene.previz.cameraMap)}</pre>
+        </>
+      )}
+
       <p className="label mt-4">Assembled prompt — sent to the engine verbatim</p>
-      <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-lg bg-zinc-900 p-3 text-[11px] leading-relaxed text-zinc-300">
+      <pre className="codeblock max-h-96">
         {scene.assembledPrompt ?? 'Not stored yet — generate this scene to capture its prompt.'}
       </pre>
     </div>

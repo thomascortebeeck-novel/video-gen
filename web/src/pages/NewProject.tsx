@@ -30,6 +30,7 @@ export default function NewProject() {
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
   const [resolution, setResolution] = useState<Resolution>('720p');
   const [videoEngine, setVideoEngine] = useState<NonNullable<ProjectInput['videoEngine']>>('auto');
+  const [previz, setPreviz] = useState<NonNullable<ProjectInput['previz']>>('auto');
   const [stylePreset, setStylePreset] = useState('cinematic');
   const [styleNotes, setStyleNotes] = useState('');
   const [dialogueEnabled, setDialogueEnabled] = useState(true);
@@ -51,7 +52,7 @@ export default function NewProject() {
     try {
       const input: ProjectInput = {
         concept, who, what, where, when, extraNotes,
-        durationSec, aspectRatio, resolution, videoEngine, stylePreset, styleNotes,
+        durationSec, aspectRatio, resolution, videoEngine, previz, stylePreset, styleNotes,
         dialogueEnabled, dialogueNotes,
         audio,
       };
@@ -72,21 +73,21 @@ export default function NewProject() {
 
   return (
     <div className="mx-auto max-w-3xl">
-      <h1 className="mb-1 text-xl font-semibold text-zinc-100">New project</h1>
-      <p className="mb-6 text-sm text-zinc-500">
+      <h1 className="mb-1 text-xl font-semibold text-ink">New project</h1>
+      <p className="mb-6 text-sm text-muted">
         1 — Upload the people/products that must appear. 2 — Tell the director what the video is about. 3 — Generate.
       </p>
 
       {/* ---- Subjects ---- */}
       <div className="card mb-6 p-5">
-        <h2 className="mb-1 font-medium text-zinc-100">1 · Characters & products</h2>
-        <p className="mb-4 text-xs text-zinc-500">
+        <h2 className="mb-1 font-medium text-ink">1 · Characters & products</h2>
+        <p className="mb-4 text-xs text-muted">
           Characters get a locked written sheet + a casting <strong>screen test</strong> (a short video master — the
           identity and voice every scene follows; recast until you like the person). Products get a reference sheet +
           angle images (count auto-chosen by product type).
         </p>
         {subjects.map((s) => (
-          <div key={s.key} className="mb-3 rounded-lg border border-zinc-800 p-4">
+          <div key={s.key} className="well mb-3 p-4">
             <div className="flex flex-wrap items-center gap-3">
               <select className="input w-36" value={s.kind}
                 onChange={(e) => patchSubject(s.key, { kind: e.target.value as 'character' | 'product' })}>
@@ -116,9 +117,9 @@ export default function NewProject() {
               value={s.notes} onChange={(e) => patchSubject(s.key, { notes: e.target.value })} />
             <div className="mt-3 flex items-center gap-3">
               <input type="file" accept="image/*" multiple
-                className="text-sm text-zinc-400 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-800 file:px-3 file:py-1.5 file:text-sm file:text-zinc-200 hover:file:bg-zinc-700"
+                className="text-sm text-ink-2 file:mr-3 file:rounded-lg file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:text-ink hover:file:bg-line"
                 onChange={(e) => patchSubject(s.key, { files: Array.from(e.target.files ?? []) })} />
-              <span className="text-xs text-zinc-500">
+              <span className="text-xs text-muted">
                 {s.files.length > 0 ? `${s.files.length} photo(s)` : s.kind === 'character' ? 'No photo → the director invents the face' : 'Product photos strongly recommended'}
               </span>
             </div>
@@ -132,7 +133,7 @@ export default function NewProject() {
 
       {/* ---- Story ---- */}
       <div className="card mb-6 p-5">
-        <h2 className="mb-4 font-medium text-zinc-100">2 · The video</h2>
+        <h2 className="mb-4 font-medium text-ink">2 · The video</h2>
         <div className="grid gap-4">
           <div>
             <label className="label">Working title (optional)</label>
@@ -158,13 +159,13 @@ export default function NewProject() {
 
       {/* ---- Format & style ---- */}
       <div className="card mb-6 p-5">
-        <h2 className="mb-4 font-medium text-zinc-100">3 · Format, style & audio</h2>
+        <h2 className="mb-4 font-medium text-ink">3 · Format, style & audio</h2>
         <div className="grid gap-4 sm:grid-cols-3">
           <div>
             <label className="label">Duration — {durationSec}s</label>
             <input type="range" min={5} max={120} step={5} value={durationSec}
               onChange={(e) => setDurationSec(Number(e.target.value))} className="w-full accent-amber-500" />
-            <p className="mt-1 text-[11px] text-zinc-600">Longer videos are split into scenes and stitched (extend / frame bridging).</p>
+            <p className="mt-1 text-[11px] text-faint">Longer videos are split into scenes and stitched (extend / frame bridging).</p>
           </div>
           <div>
             <label className="label">Aspect ratio</label>
@@ -186,9 +187,22 @@ export default function NewProject() {
             <option value="ark25">Seedance 2.5 — BytePlus ModelArk (official, cheapest)</option>
             <option value="fal25">Seedance 2.5 — fal.ai</option>
           </select>
-          <p className="mt-1 text-[11px] text-zinc-600">
+          <p className="mt-1 text-[11px] text-faint">
             Note: all Seedance 2.5 APIs currently reject reference images of people — character identity is
             carried by generated footage (extends and video references) instead of the angle sheets.
+          </p>
+        </div>
+        <div className="mt-4">
+          <label className="label">Camera previz (Blender)</label>
+          <select className="input" value={previz} onChange={(e) => setPreviz(e.target.value as NonNullable<ProjectInput['previz']>)}>
+            <option value="auto">Auto — the director decides per scene (recommended)</option>
+            <option value="always">Always — plan a camera move for every scene</option>
+            <option value="off">Off — describe camera moves in words only</option>
+          </select>
+          <p className="mt-1 text-[11px] text-faint">
+            Complex camera moves get blocked out in 3D first: the director plans the move, you render it in
+            Blender locally for free, and the measured camera timing goes into the prompt as text — so the
+            shot is fixed before any credits are spent, and it costs nothing extra to generate.
           </p>
         </div>
         <div className="mt-4">
@@ -206,7 +220,7 @@ export default function NewProject() {
             placeholder="Style notes: palette, references, lens wishes…" />
         </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <label className="flex items-center gap-2 text-sm text-zinc-300">
+          <label className="flex items-center gap-2 text-sm text-ink-2">
             <input type="checkbox" className="accent-amber-500" checked={dialogueEnabled} onChange={(e) => setDialogueEnabled(e.target.checked)} />
             Characters speak (dialogue with lip-sync)
           </label>
@@ -218,7 +232,7 @@ export default function NewProject() {
             ['music', 'Music'], ['sfx', 'Sound effects'], ['ambience', 'Ambience'],
             ['subtitles', 'Subtitles'], ['characterVoices', 'Custom voice per character (ElevenLabs, v2)'],
           ] as const).map(([k, label]) => (
-            <label key={k} className="flex items-center gap-2 text-sm text-zinc-300">
+            <label key={k} className="flex items-center gap-2 text-sm text-ink-2">
               <input type="checkbox" className="accent-amber-500" checked={audio[k]}
                 onChange={(e) => setAudio((a) => ({ ...a, [k]: e.target.checked }))} />
               {label}
@@ -227,12 +241,12 @@ export default function NewProject() {
         </div>
       </div>
 
-      {error && <p className="mb-4 rounded-lg border border-red-900 bg-red-950/40 p-3 text-sm text-red-300">{error}</p>}
+      {error && <p className="mb-4 rounded-lg border border-bad/40 bg-bad-soft p-3 text-sm text-bad">{error}</p>}
       <div className="flex items-center gap-3">
         <button className="btn btn-primary px-6 py-2.5 text-base" disabled={!canSubmit || busy !== null} onClick={() => void submit()}>
           {busy ? (<><Spinner /> {busy}</>) : 'Generate briefing'}
         </button>
-        <p className="text-xs text-zinc-500">
+        <p className="text-xs text-muted">
           Generates the character/product sheets, angle images, environments and the full scene briefing — you review everything before any video is made.
         </p>
       </div>

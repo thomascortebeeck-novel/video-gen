@@ -15,7 +15,10 @@ import {
 import {
   activeEngine, activeImageProvider, isForcedMock, MAX_IMAGE_REFS, EngineCaps,
 } from './config';
-import { anthropicConfigured, analyzeSubjectWithClaude, planBriefingWithClaude, BriefingPlan } from './claude';
+import {
+  anthropicConfigured, analyzeSubjectWithClaude, planBriefingWithClaude,
+  describePrevizWithClaude, BriefingPlan,
+} from './claude';
 import {
   submitImageJob, pollUntilDone, assertCompleted, higgsfieldVideoProvider,
 } from './higgsfield';
@@ -26,16 +29,20 @@ import { waitForVideo, downloadUrl, VideoProvider } from './providers';
 import { elevenLabsConfigured, designVoice, textToSpeech } from './elevenlabs';
 import {
   makeMockImage, makeMockVideo, makeMockAudio, resizeForVision,
-  extractLastFrame, concatVideos, ensureAudioTrack, ConcatItem,
+  extractLastFrame, extractFramesAtFps, buildContactSheet,
+  concatVideos, ensureAudioTrack, ConcatItem,
 } from './media';
 import {
   buildCharacterMasterPrompt, buildProductMasterPrompt, buildAnglePrompt,
   buildEnvironmentPrompt, buildScenePrompt, buildKeyframePrompt, buildV1MotionPrompt,
   buildScreenTestPrompt, resolveReferenceTags, ResolvedRef,
 } from '../../shared/assemble';
+import {
+  buildPrevizScript, buildPrevizRefLine, checkStageTiming, previzAllowed,
+} from '../../shared/previz';
 import type {
   ProjectDoc, SubjectDoc, SubjectAngle, SceneDoc, EnvironmentDoc,
-  Briefing, GenerationInfo, SubjectSheet,
+  Briefing, GenerationInfo, SubjectSheet, CameraPlan, CameraMapEntry, ScenePreviz, PrevizFeed,
 } from '../../shared/types';
 import { anglesForSubject, collections, storagePaths } from '../../shared/types';
 
@@ -188,6 +195,31 @@ function mockPlan(project: ProjectDoc, subjects: SubjectDoc[]): BriefingPlan {
           ...subjRefs(i),
           { kind: 'environment' as const, envKey: 'main_location', use: `${where}. Space, materials and lighting only.`, ignore: 'Do not use any people from the image.' },
         ],
+        // Mock mode still exercises the previz path end to end: the opening
+        // scene gets a real, runnable camera plan (push in, then turn onto
+        // the subject) so the Blender step can be tested without any keys.
+        cameraComplexity: (i === 0 ? 'complex' : 'simple') as 'complex' | 'simple',
+        previzRecommended: i === 0 && (project.input.previz ?? 'auto') !== 'off',
+        previzReason: i === 0
+          ? 'The camera changes subject mid-shot — worth blocking out before spending a generation.'
+          : 'A single held shot with one slow push-in; prose describes it completely.',
+        ...(i === 0 && (project.input.previz ?? 'auto') !== 'off' ? {
+          cameraPlan: {
+            durationSec: Math.min(dur, caps.maxClipSeconds),
+            intent: 'Opens wide on the room, pushes in slowly and level, then turns to settle on the subject.',
+            set: [
+              { id: 'floor', kind: 'plane' as const, label: 'the floor', pos: [0, 0, 0], size: [12, 12, 1] },
+              { id: 'back_wall', kind: 'box' as const, label: 'the back wall', pos: [0, 5, 1.5], size: [12, 0.2, 3] },
+              { id: 'table', kind: 'box' as const, label: 'the table', pos: [0, 1.2, 0.38], size: [1.6, 0.8, 0.75] },
+              { id: 'subject', kind: 'figure' as const, label: 'the subject', pos: [0.6, 2.0, 0.875], size: [0.5, 0.3, 1.75], rotZdeg: 180 },
+            ],
+            camera: [
+              { t: 0, pos: [0, -5.5, 1.6], lookAt: [0, 1.2, 1.1], focalMm: 28, note: 'holds the wide opening angle' },
+              { t: Math.round(Math.min(dur, caps.maxClipSeconds) / 2), pos: [0, -2.6, 1.6], lookAt: [0, 1.2, 1.1], focalMm: 35, note: 'slow push in, level' },
+              { t: Math.min(dur, caps.maxClipSeconds), pos: [-0.4, -1.6, 1.6], lookAt: [0.6, 2.0, 1.5], focalMm: 50, easing: 'smooth' as const, note: 'turns and settles on the subject' },
+            ],
+          },
+        } : {}),
         stitchMode: i === 0 ? ('hard_cut' as const) : ('frame_bridge' as const),
         stitchNotes: i === 0 ? 'Opening scene.' : 'Continues directly from the previous scene\'s final frame; motion carries forward.',
       };
@@ -268,6 +300,10 @@ export async function runPlanBriefing(uid: string, projectId: string): Promise<v
           ...(r.envKey ? { envId: r.envKey } : {}),
           use: r.use, ...(r.ignore ? { ignore: r.ignore } : {}),
         })),
+        ...(s.cameraComplexity ? { cameraComplexity: s.cameraComplexity } : {}),
+        ...(s.previzRecommended !== undefined ? { previzRecommended: s.previzRecommended } : {}),
+        ...(s.previzReason ? { previzReason: s.previzReason } : {}),
+        ...(previzDocFor(project, s)),
         stitching: {
           mode: (!caps.extend && s.stitchMode === 'extend_prev') ? 'frame_bridge' : s.stitchMode,
           notes: s.stitchNotes,
@@ -613,6 +649,157 @@ export async function runGenerateVoiceSample(uid: string, projectId: string, sub
 }
 
 // ---------------------------------------------------------------------------
+// 5b. Camera previz (Blender)
+//
+// A complex camera move written as prose is a guess, and every guess costs a
+// paid generation. The director instead plans the move as geometry; we turn
+// that into a Blender script the user runs locally for FREE, then read the
+// rendered frames back into an exact timed camera map that goes into the
+// prompt as TEXT — reference images are token-free on ModelArk, reference
+// videos are not.
+// ---------------------------------------------------------------------------
+
+/** The briefing schema gives number[]; the domain type wants a fixed triple. */
+function vec3(v: number[] | undefined, fallback: [number, number, number] = [0, 0, 0]): [number, number, number] {
+  if (!v || v.length < 3) return fallback;
+  return [v[0], v[1], v[2]];
+}
+
+/** SceneDoc.previz from a planned scene — only when previz is warranted. */
+function previzDocFor(project: ProjectDoc, s: BriefingPlan['scenes'][number]): { previz?: ScenePreviz } {
+  if (!previzAllowed(project.input.previz, s.previzRecommended)) return {};
+  if (!s.cameraPlan) return {};
+  const plan: CameraPlan = {
+    durationSec: s.cameraPlan.durationSec,
+    fps: 24,
+    intent: s.cameraPlan.intent,
+    set: s.cameraPlan.set.map((o) => ({
+      id: o.id, kind: o.kind, label: o.label,
+      pos: vec3(o.pos), size: vec3(o.size, [1, 1, 1]),
+      ...(o.rotZdeg !== undefined ? { rotZdeg: o.rotZdeg } : {}),
+      ...(o.subjectId ? { subjectId: o.subjectId } : {}),
+    })),
+    camera: s.cameraPlan.camera.map((k) => ({
+      t: k.t, pos: vec3(k.pos), lookAt: vec3(k.lookAt), focalMm: k.focalMm,
+      ...(k.easing ? { easing: k.easing } : {}),
+      ...(k.note ? { note: k.note } : {}),
+    })),
+  };
+  return { previz: { status: 'planned', plan, feed: 'map_only', updatedAt: now() } };
+}
+
+/** Fallback camera map (mock mode): read the plan's own keyframe notes. */
+function mapFromPlan(plan: CameraPlan | undefined, durationSec: number): CameraMapEntry[] {
+  if (!plan || plan.camera.length === 0) return [];
+  const keys = [...plan.camera].sort((a, b) => a.t - b.t);
+  const out: CameraMapEntry[] = [];
+  for (let i = 0; i < keys.length; i++) {
+    const t0 = keys[i].t;
+    const t1 = i + 1 < keys.length ? keys[i + 1].t : durationSec;
+    if (t1 <= t0) continue;
+    out.push({ t0, t1, move: keys[i].note ?? (i === 0 ? 'holds the opening angle' : 'continues the move') });
+  }
+  return out;
+}
+
+function sceneDocRef(uid: string, projectId: string, sceneId: string) {
+  return db.collection(collections.scenes(uid, projectId)).doc(sceneId);
+}
+
+/**
+ * Turn the scene's camera plan into a Blender script. Costs nothing and
+ * spends no credits — the user runs it locally and iterates for free.
+ */
+export async function runBuildPrevizScript(
+  uid: string, projectId: string, sceneId: string,
+): Promise<{ scriptPath: string; fileName: string }> {
+  const project = await getProject(uid, projectId);
+  const scene = await getScene(uid, projectId, sceneId);
+  const plan = scene.previz?.plan;
+  if (!plan) {
+    throw new HttpsError('failed-precondition',
+      `Scene "${scene.title}" has no camera plan. The director writes one only for complex moves — set the project's previz mode to "always" and re-plan the briefing if you want one here.`);
+  }
+  // The previz and the generation must share one clock, or the camera map
+  // cannot be timed against the stages.
+  const synced: CameraPlan = { ...plan, durationSec: scene.durationSec };
+  const fileName = `previz_${sceneId}.py`;
+  const script = buildPrevizScript(synced, {
+    sceneTitle: scene.title,
+    aspectRatio: project.input.aspectRatio,
+    fileName,
+    outputName: `previz_${sceneId}.mp4`,
+  });
+  const scriptPath = storagePaths.previzScript(uid, projectId, sceneId);
+  await saveBuffer(scriptPath, Buffer.from(script, 'utf8'), 'text/x-python');
+  await sceneDocRef(uid, projectId, sceneId).set({
+    previz: {
+      ...(scene.previz ?? { feed: 'map_only' as PrevizFeed }),
+      plan: synced, status: 'script_ready', scriptPath, updatedAt: now(),
+    },
+    updatedAt: now(),
+  }, { merge: true });
+  return { scriptPath, fileName };
+}
+
+/**
+ * Read a rendered previz back: sample it at 1 fps, tile the frames into a
+ * contact sheet, and have Claude step through the frames to write the timed
+ * camera map. Then check every stage lands while the camera is pointed at it.
+ */
+export async function runIngestPreviz(
+  uid: string, projectId: string, sceneId: string,
+): Promise<{ windows: number; warnings: string[] }> {
+  const scene = await getScene(uid, projectId, sceneId);
+  const previz = scene.previz;
+  if (!previz?.videoPath) {
+    throw new HttpsError('failed-precondition', 'Upload the rendered previz MP4 for this scene first.');
+  }
+  await setProgress(uid, projectId, 'previz', `${scene.title}: reading the previz…`);
+
+  const video = await downloadToBuffer(previz.videoPath);
+  const frames = await extractFramesAtFps(video, 1, 40);
+  if (frames.length === 0) {
+    throw new HttpsError('failed-precondition', 'No frames could be read from that previz clip — re-render it and upload again.');
+  }
+  const sheetPath = storagePaths.previzSheet(uid, projectId, sceneId);
+  await saveBuffer(sheetPath, await buildContactSheet(frames, { cols: 5, secondsPerFrame: 1 }), 'image/png');
+
+  let cameraMap: CameraMapEntry[];
+  let riskiestMoment: string | undefined;
+  let fallbackFix: string | undefined;
+  if (anthropicConfigured() && !isForcedMock()) {
+    const read = await describePrevizWithClaude({
+      frames: frames.map((f) => ({ data: f, mediaType: 'image/png' as const })),
+      durationSec: scene.durationSec,
+      sceneTitle: scene.title,
+      intent: previz.plan?.intent ?? scene.cameraAndPerformance,
+      blockLabels: (previz.plan?.set ?? []).map((o) => `${o.id} = ${o.label}`),
+    });
+    cameraMap = read.map;
+    riskiestMoment = read.riskiestMoment;
+    fallbackFix = read.fallbackFix;
+  } else {
+    cameraMap = mapFromPlan(previz.plan, scene.durationSec);
+  }
+
+  const warnings = checkStageTiming({ ...scene, previz: { ...previz, cameraMap } }, cameraMap);
+  await sceneDocRef(uid, projectId, sceneId).set({
+    previz: {
+      ...previz,
+      status: 'mapped', contactSheetPath: sheetPath, cameraMap,
+      ...(riskiestMoment ? { riskiestMoment } : {}),
+      ...(fallbackFix ? { fallbackFix } : {}),
+      timingWarnings: warnings,
+      updatedAt: now(),
+    },
+    updatedAt: now(),
+  }, { merge: true });
+  await setProgress(uid, projectId, 'previz', `${scene.title}: camera map ready (${cameraMap.length} windows).`);
+  return { windows: cameraMap.length, warnings };
+}
+
+// ---------------------------------------------------------------------------
 // 6. Scene generation
 // ---------------------------------------------------------------------------
 
@@ -650,6 +837,9 @@ async function resolveRefUrls(
       if (!path) missing.push(`voice sample for ${subj?.name ?? r.subjectId}`);
     } else if (r.kind === 'bridge_frame') {
       path = scene.stitching.bridgeFramePath;
+    } else if (r.kind === 'camera_previz') {
+      // Injected at generation time with its asset already resolved.
+      path = r.path;
     }
     if (path) {
       out.push({ ...r, path, url: videoMock ? `mock://${path}` : await publicUrl(path) });
@@ -713,6 +903,21 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
       extendVideoUrl = videoMock ? `mock://${prev.videoPath}` : await publicUrl(prev.videoPath);
     }
 
+    // --- Camera previz ---
+    // The timed camera map always rides along inside the prompt (free). The
+    // previz asset itself is attached only when the scene asks for it: the
+    // contact sheet is token-free, the clip costs ~+1x base tokens.
+    const previzFeed: PrevizFeed = scene.previz?.feed ?? 'map_only';
+    const previzAsset = previzFeed === 'attach_video' ? scene.previz?.videoPath
+      : previzFeed === 'map_plus_sheet' ? scene.previz?.contactSheetPath
+        : undefined;
+    if (previzAsset && !scene.references.some((r) => r.kind === 'camera_previz')) {
+      const line = buildPrevizRefLine(previzFeed);
+      scene.references = [...scene.references, {
+        tag: '', kind: 'camera_previz', path: previzAsset, use: line.use, ignore: line.ignore,
+      }];
+    }
+
     // --- Resolve references to URLs ---
     const { refs: rawRefs, missing } = await resolveRefUrls(uid, projectId, scene, subjects, environments, videoMock);
     if (missing.length > 0 && !videoMock) {
@@ -720,10 +925,11 @@ export async function runGenerateScene(uid: string, projectId: string, sceneId: 
     }
     // In extend mode the source clip already carries every character's
     // identity and voice, and the adapters attach exactly one reference_video
-    // (the clip being extended) — so screen-test refs would be named in the
-    // prompt but never sent. Drop them here, before the prompt is built, so
-    // the tag list and the payload can never drift apart.
-    let refs = retag(extendVideoUrl ? rawRefs.filter((r) => r.kind !== 'subject_video') : rawRefs);
+    // (the clip being extended) — so any OTHER video ref (screen tests, an
+    // attached previz) would be named in the prompt but never sent. Drop
+    // every video ref here, before the prompt is built, so the tag list and
+    // the payload can never drift apart.
+    let refs = retag(extendVideoUrl ? rawRefs.filter((r) => r.media !== 'video') : rawRefs);
     let prompt = buildScenePrompt(scene, subjects, refs);
     await sceneRef.set({ assembledPrompt: prompt, updatedAt: now() }, { merge: true });
 

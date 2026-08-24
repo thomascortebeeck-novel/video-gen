@@ -234,6 +234,7 @@ export type SceneRefKind =
   | 'environment'     // generated environment reference
   | 'style'           // colour & light reference
   | 'bridge_frame'    // last frame of previous scene (start-frame stitching)
+  | 'camera_previz'   // Blender previz — camera movement reference ONLY
   | 'voice_audio';    // ElevenLabs voice sample (@audio ref)
 
 export interface SceneReference {
@@ -249,6 +250,106 @@ export interface SceneReference {
   use: string;
   /** What to ignore ("Do not use the image background") */
   ignore?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Camera previz (Blender)
+//
+// Complex camera moves are guesswork when written as prose — "pushes through
+// the window, then turns right onto the reveal" can come back as anything, and
+// every guess costs a paid generation. Instead the director plans the move as
+// GEOMETRY: blocky placeholder set + a keyframed camera. Deterministic code
+// (shared/previz.ts) turns that plan into a Blender Python script, Blender
+// renders it locally for free, and the rendered frames are read back into an
+// exact timed camera map that goes into the scene prompt.
+//
+// The previz feeds the generation as TEXT (and optionally one image), never as
+// a reference video by default: on ModelArk each attached reference_video adds
+// ≈ +1× base tokens while reference images are token-free.
+// ---------------------------------------------------------------------------
+
+/** One camera position in the move. Blender convention: metres, Z up. */
+export interface CameraKeyframe {
+  /** seconds from scene start */
+  t: number;
+  /** camera position [x, y, z] in metres */
+  pos: [number, number, number];
+  /** the point the camera is aimed at, [x, y, z] in metres */
+  lookAt: [number, number, number];
+  /** focal length in mm on a 36mm sensor (18 = wide, 85 = tight) */
+  focalMm: number;
+  /**
+   * 'linear' (default) holds a constant speed — the prompting guide's default
+   * camera behaviour. 'smooth' eases in/out; only for a deliberate settle.
+   */
+  easing?: 'linear' | 'smooth';
+  /** what happens at this moment: "clears the window glass" */
+  note?: string;
+}
+
+/** A blocky placeholder in the previz set. Never rendered in the final film. */
+export interface ProxyObject {
+  id: string;
+  kind: 'box' | 'cylinder' | 'plane' | 'figure';
+  /** what it stands in for: "the man, seated right" */
+  label: string;
+  /** centre position [x, y, z] in metres (z = centre height above the floor) */
+  pos: [number, number, number];
+  /** bounding size [x, y, z] in metres */
+  size: [number, number, number];
+  rotZdeg?: number;
+  /** when this block stands in for a real character */
+  subjectId?: string;
+}
+
+export interface CameraPlan {
+  /** MUST equal the scene duration — previz and generation share a clock */
+  durationSec: number;
+  fps: 24;
+  /** the blocky stand-in set: floor, walls, furniture, figures */
+  set: ProxyObject[];
+  /** the move, in order; the first keyframe is t=0 and is the opening frame */
+  camera: CameraKeyframe[];
+  /** the director's plain-words description of the move */
+  intent: string;
+}
+
+/** One window of the move, read back from the rendered previz frames. */
+export interface CameraMapEntry {
+  t0: number;
+  t1: number;
+  /** "pans right onto the man", "travels through the doorway" */
+  move: string;
+}
+
+/**
+ * How a scene's previz reaches the video model.
+ *  - map_only        the timed camera map as text. Free.
+ *  - map_plus_sheet  + the contact sheet as one reference image. Free
+ *                    (images are token-free) but risks style bleed.
+ *  - attach_video    + the previz clip as a reference_video. Costs ≈ +1× base
+ *                    tokens per generation; opt-in only.
+ */
+export type PrevizFeed = 'map_only' | 'map_plus_sheet' | 'attach_video';
+
+export interface ScenePreviz {
+  status: 'none' | 'planned' | 'script_ready' | 'rendered' | 'mapped';
+  plan?: CameraPlan;
+  /** generated Blender script (Storage path) */
+  scriptPath?: string;
+  /** the rendered previz clip, uploaded back after running Blender */
+  videoPath?: string;
+  /** 1 fps contact sheet built from the previz */
+  contactSheetPath?: string;
+  /** the timed camera map read back from the rendered frames */
+  cameraMap?: CameraMapEntry[];
+  /** the single riskiest moment of the generation + a one-line fallback fix */
+  riskiestMoment?: string;
+  fallbackFix?: string;
+  /** stage beats that fall outside the window the camera is pointed at them */
+  timingWarnings?: string[];
+  feed: PrevizFeed;
+  updatedAt?: number;
 }
 
 export interface SceneDoc {
@@ -281,6 +382,13 @@ export interface SceneDoc {
   keepConsistent: string;
 
   references: SceneReference[];
+
+  /** Director's read on whether this move needs previz, and why */
+  cameraComplexity?: 'simple' | 'complex';
+  previzRecommended?: boolean;
+  previzReason?: string;
+  /** The Blender previz for this scene's camera move */
+  previz?: ScenePreviz;
 
   stitching: {
     mode: StitchMode;
@@ -337,6 +445,13 @@ export interface ProjectInput {
 
   /** preferred video engine for this project; 'auto' (default) = best available */
   videoEngine?: 'auto' | 'ark25' | 'fal25' | 'seedance25' | 'seedance1';
+
+  /**
+   * Blender camera previz: block out complex camera moves in 3D before
+   * spending a generation. 'auto' (default) lets the director decide per
+   * scene; 'always' plans one for every scene; 'off' disables it.
+   */
+  previz?: 'off' | 'auto' | 'always';
 
   /** e.g. "cinematic", "ugc_handheld", "camcorder_2000s", "documentary", "commercial" */
   stylePreset?: string;
@@ -446,6 +561,8 @@ export interface GenerateAngleImageRequest { projectId: string; subjectId: strin
 export interface GenerateEnvironmentRequest { projectId: string; envId: string; }
 export interface GenerateSceneRequest { projectId: string; sceneId: string; }
 export interface ExtendSceneRequest { projectId: string; sceneId: string; extraSeconds: number; prompt?: string; }
+export interface BuildPrevizScriptRequest { projectId: string; sceneId: string; }
+export interface IngestPrevizRequest { projectId: string; sceneId: string; }
 export interface AssembleFinalRequest { projectId: string; }
 export interface GenerateVoiceSampleRequest { projectId: string; subjectId: string; }
 
@@ -564,6 +681,12 @@ export const storagePaths = {
     `users/${uid}/projects/${projectId}/screen_tests/${subjectId}/v${version}.mp4`,
   bridgeFrame: (uid: string, projectId: string, sceneId: string) =>
     `users/${uid}/projects/${projectId}/scenes/${sceneId}/bridge_in.png`,
+  previzScript: (uid: string, projectId: string, sceneId: string) =>
+    `users/${uid}/projects/${projectId}/previz/${sceneId}/camera.py`,
+  previzVideo: (uid: string, projectId: string, sceneId: string, version: number) =>
+    `users/${uid}/projects/${projectId}/previz/${sceneId}/v${version}.mp4`,
+  previzSheet: (uid: string, projectId: string, sceneId: string) =>
+    `users/${uid}/projects/${projectId}/previz/${sceneId}/contact_sheet.png`,
   voiceSample: (uid: string, projectId: string, subjectId: string) =>
     `users/${uid}/projects/${projectId}/audio/${subjectId}_voice_sample.mp3`,
   finalVideo: (uid: string, projectId: string, version: number) =>

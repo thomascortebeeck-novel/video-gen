@@ -67,9 +67,9 @@ export default function BriefingView({ uid, project, subjects, scenes, environme
             {environments.map((env) => (
               <div key={env.id} className="card p-3">
                 <div className="mb-2 flex items-center justify-between gap-2">
-                  <h3 className="text-sm font-medium text-zinc-200">{env.name}</h3>
+                  <h3 className="text-sm font-medium text-ink">{env.name}</h3>
                   <div className="flex items-center gap-1.5">
-                    {env.type === 'insert_card' && <span className="chip bg-violet-950/60 text-violet-300">insert card</span>}
+                    {env.type === 'insert_card' && <span className="chip chip-cool">insert card</span>}
                     <StatusChip status={env.generation.status} />
                   </div>
                 </div>
@@ -132,7 +132,7 @@ export default function BriefingView({ uid, project, subjects, scenes, environme
           {briefing.directorsNotes.length > 0 && (
             <Section title="Director's notes" subtitle="Things the director invented — confirm or adjust them above.">
               <div className="card p-4">
-                <ul className="list-disc space-y-1 pl-5 text-sm text-zinc-400">
+                <ul className="list-disc space-y-1 pl-5 text-sm text-ink-2">
                   {briefing.directorsNotes.map((n, i) => <li key={i}>{n}</li>)}
                 </ul>
               </div>
@@ -140,7 +140,21 @@ export default function BriefingView({ uid, project, subjects, scenes, environme
           )}
 
           <Section title={`Scenes (${scenes.length})`}
-            subtitle="Each scene is one Seedance generation, written in the advanced template. Edit any field — the prompt reassembles live. Stitching: hard cut / frame bridge (last frame → first frame) / extend.">
+            subtitle="Each scene is one Seedance generation, written in the advanced template. Edit any field — the prompt reassembles live. Stitching: hard cut / frame bridge (last frame → first frame) / extend."
+            right={
+              <label className="flex items-center gap-2">
+                <span className="eyebrow whitespace-nowrap">Camera previz</span>
+                <select className="input w-auto py-1 text-xs"
+                  value={project.input.previz ?? 'auto'}
+                  onChange={(e) => void patchDoc(projectPath, {
+                    input: { ...project.input, previz: e.target.value as NonNullable<ProjectDoc['input']['previz']> },
+                  })}>
+                  <option value="auto">Auto — director decides</option>
+                  <option value="always">Always</option>
+                  <option value="off">Off</option>
+                </select>
+              </label>
+            }>
             <div className="space-y-3">
               {scenes.map((scene) => (
                 <SceneEditor key={scene.id} uid={uid} project={project} scene={scene}
@@ -150,13 +164,13 @@ export default function BriefingView({ uid, project, subjects, scenes, environme
           </Section>
 
           <Section title="Stitching plan" subtitle={briefing.stitchingPlan.assemblyNotes}>
-            <div className="card p-4 text-sm text-zinc-400">
+            <div className="card p-4 text-sm text-ink-2">
               {briefing.stitchingPlan.boundaries.length === 0 && <p>Single scene — no boundaries.</p>}
               <ul className="space-y-1">
                 {briefing.stitchingPlan.boundaries.map((b, i) => (
                   <li key={i}>
-                    <span className="text-zinc-200">Scene {b.fromSceneIndex + 1} → {b.toSceneIndex + 1}</span>
-                    {' '}<span className="chip bg-zinc-800 text-amber-300">{b.mode.replace('_', ' ')}</span>
+                    <span className="text-ink">Scene {b.fromSceneIndex + 1} → {b.toSceneIndex + 1}</span>
+                    {' '}<span className="chip chip-accent">{b.mode.replace('_', ' ')}</span>
                     {' '}<span>{b.rationale}</span>
                   </li>
                 ))}
@@ -165,31 +179,32 @@ export default function BriefingView({ uid, project, subjects, scenes, environme
           </Section>
 
           {/* ================= Accept ================= */}
-          <div className="card sticky bottom-4 z-10 flex flex-wrap items-center gap-3 border-amber-900/40 p-4">
-            <div className="text-sm">
-              <p className="font-medium text-zinc-100">Happy with the briefing?</p>
-              <p className="text-xs text-zinc-500">
-                {allAnglesReady ? 'All reference assets are ready.' : 'Tip: generate the angle sets & environments first — scenes need them as references.'}
-              </p>
+          <div className="sticky bottom-4 z-20 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-accent/35 bg-surface px-4 py-2.5"
+            style={{ boxShadow: 'var(--shadow-pop)' }}>
+            <div className="min-w-0 text-sm">
+              <span className="font-medium text-ink">Happy with the briefing?</span>
+              <span className="ml-2 text-xs text-muted">
+                {allAnglesReady ? 'All reference assets are ready.' : 'Reference assets first — scenes need them.'}
+              </span>
             </div>
             <div className="ml-auto flex gap-2">
-              <button className="btn btn-ghost" disabled={busyKeys['replan']}
+              <button className="btn btn-ghost btn-sm" disabled={busyKeys['replan']}
                 onClick={() => void track('replan', () => api.planBriefing({ projectId: project.id }))}>
                 {busyKeys['replan'] ? <><Spinner /> Re-planning…</> : '↻ Regenerate briefing'}
               </button>
               {project.status !== 'briefing_accepted' && project.status !== 'producing' && project.status !== 'done' ? (
-                <button className="btn btn-primary"
+                <button className="btn btn-primary btn-sm"
                   onClick={() => void patchDoc(projectPath, { status: 'briefing_accepted' })}>
                   Accept briefing → production
                 </button>
               ) : (
-                <span className="chip bg-emerald-950 text-emerald-300">Briefing accepted</span>
+                <span className="chip chip-ok">Briefing accepted</span>
               )}
             </div>
           </div>
         </>
       ) : (
-        <div className="card p-6 text-sm text-zinc-500">
+        <div className="card p-6 text-sm text-muted">
           {project.status === 'draft'
             ? <>No briefing yet. <button className="btn btn-primary ml-2" onClick={() => void track('start', async () => { await api.analyzeSubjects({ projectId: project.id }); await api.planBriefing({ projectId: project.id }); })}>{busyKeys['start'] ? <><Spinner /> Working…</> : 'Generate briefing'}</button></>
             : 'The director is working — the briefing appears here when ready.'}
@@ -215,9 +230,9 @@ function SubjectCard({ uid, project, subject, busy, track, voicesEnabled }: {
   return (
     <div className="card mb-4 p-4">
       <div className="flex flex-wrap items-center gap-3">
-        <h3 className="font-medium text-zinc-100">{subject.name}</h3>
-        <span className="chip bg-zinc-800 text-zinc-400">{subject.kind}</span>
-        {sheet && <span className="text-xs text-zinc-500">{sheet.roleName}</span>}
+        <h3 className="font-medium text-ink">{subject.name}</h3>
+        <span className="chip chip-mono">{subject.kind}</span>
+        {sheet && <span className="text-xs text-muted">{sheet.roleName}</span>}
         <StatusChip
           status={subject.status === 'error' ? 'failed' : subject.status === 'ready' ? 'completed' : subject.status === 'generating_angles' || subject.status === 'analyzing' ? 'generating' : 'idle'}
           label={subject.status.replace(/_/g, ' ')} />
@@ -226,7 +241,7 @@ function SubjectCard({ uid, project, subject, busy, track, voicesEnabled }: {
             {showSheet ? 'Hide sheet' : 'Edit sheet'}
           </button>
           {sheet && subject.kind === 'character' && (
-            <button className="btn btn-primary" disabled={busy[`st_${subject.id}`] || subject.screenTest?.generation.status === 'generating'}
+            <button className="btn btn-ghost" disabled={busy[`st_${subject.id}`] || subject.screenTest?.generation.status === 'generating'}
               onClick={() => void track(`st_${subject.id}`, () => api.generateScreenTest({ projectId: project.id, subjectId: subject.id }))}>
               {busy[`st_${subject.id}`] || subject.screenTest?.generation.status === 'generating'
                 ? <><Spinner /> Screen test…</>
@@ -234,7 +249,7 @@ function SubjectCard({ uid, project, subject, busy, track, voicesEnabled }: {
             </button>
           )}
           {sheet && subject.kind === 'product' && (
-            <button className="btn btn-primary" disabled={busy[`angles_${subject.id}`]}
+            <button className="btn btn-ghost" disabled={busy[`angles_${subject.id}`]}
               onClick={() => void track(`angles_${subject.id}`, () => api.generateAngles({ projectId: project.id, subjectId: subject.id }))}>
               {busy[`angles_${subject.id}`] ? <><Spinner /> {doneCount}/{subject.angles.length}</> : doneCount > 0 ? 'Regenerate missing' : 'Generate angles'}
             </button>
@@ -244,7 +259,7 @@ function SubjectCard({ uid, project, subject, busy, track, voicesEnabled }: {
       <ErrorNote error={subject.error} />
       {subject.kind === 'character' && (
         <div className="mt-3">
-          <p className="mb-1 text-xs text-zinc-500">
+          <p className="mb-1 text-xs text-muted">
             Casting screen test — the character's video master: a slow turn plus one spoken line. Identity <em>and</em> voice
             for every scene follow this clip; recast until you like the person.
           </p>
@@ -252,18 +267,18 @@ function SubjectCard({ uid, project, subject, busy, track, voicesEnabled }: {
             <div className="flex flex-wrap items-start gap-3">
               <StorageVideo path={subject.screenTest.videoPath} className="max-h-64 rounded-lg" />
               {(subject.screenTest.versions?.length ?? 0) > 1 && (
-                <p className="text-[11px] text-zinc-600">{subject.screenTest.versions!.length} takes — latest shown</p>
+                <p className="text-[11px] text-faint">{subject.screenTest.versions!.length} takes — latest shown</p>
               )}
             </div>
           ) : (
-            <p className="text-xs text-zinc-600">No screen test yet — scenes can't lock this character until one exists.</p>
+            <p className="text-xs text-faint">No screen test yet — scenes can't lock this character until one exists.</p>
           )}
           <ErrorNote error={subject.screenTest?.generation.status === 'failed' ? subject.screenTest.generation.error : undefined} />
         </div>
       )}
 
       {showSheet && sheet && (
-        <div className="mt-4 grid gap-3 rounded-lg border border-zinc-800 p-4 sm:grid-cols-2">
+        <div className="well mt-4 grid gap-3 p-4 sm:grid-cols-2">
           <Field label="Story role" value={sheet.roleName} onSave={(v) => void patchDoc(path, { sheet: { ...sheet, roleName: v } })} />
           <Field label="One-line read" value={sheet.oneLineRead} onSave={(v) => void patchDoc(path, { sheet: { ...sheet, oneLineRead: v } })} />
           {subject.kind === 'character' ? (
@@ -290,11 +305,11 @@ function SubjectCard({ uid, project, subject, busy, track, voicesEnabled }: {
           {subject.angles.map((a) => (
             <div key={a.id} className="group relative">
               <StorageImg path={a.imagePath} alt={a.label} className="aspect-[3/4] w-full rounded-lg object-cover" />
-              <div className="absolute inset-x-0 bottom-0 rounded-b-lg bg-zinc-950/80 p-1.5">
-                <p className="truncate text-[10px] text-zinc-300">{a.isMaster ? '★ ' : ''}{a.label}</p>
+              <div className="absolute inset-x-0 bottom-0 rounded-b-lg bg-ground/85 p-1.5">
+                <p className="truncate text-[10px] text-ink-2">{a.isMaster ? '★ ' : ''}{a.label}</p>
                 <div className="mt-0.5 flex items-center justify-between">
                   <StatusChip status={a.generation.status} />
-                  <button className="hidden text-[10px] text-amber-400 hover:text-amber-300 group-hover:block"
+                  <button className="hidden text-[10px] font-medium text-accent underline-offset-2 hover:underline group-hover:block"
                     disabled={busy[`angle_${a.id}`]}
                     onClick={() => void track(`angle_${a.id}`, () => api.generateAngleImage({ projectId: project.id, subjectId: subject.id, angleId: a.id }))}>
                     ↻ redo
@@ -307,9 +322,9 @@ function SubjectCard({ uid, project, subject, busy, track, voicesEnabled }: {
       )}
 
       {voicesEnabled && subject.kind === 'character' && sheet?.voice && (
-        <div className="mt-4 rounded-lg border border-zinc-800 p-3">
+        <div className="well mt-4 p-3">
           <div className="mb-2 flex items-center gap-2">
-            <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">Voice (ElevenLabs)</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted">Voice (ElevenLabs)</span>
             <StatusChip status={sheet.voice.sampleStatus ?? 'idle'} />
             <button className="btn btn-ghost ml-auto" disabled={busy[`voice_${subject.id}`]}
               onClick={() => void track(`voice_${subject.id}`, () => api.generateVoiceSample({ projectId: project.id, subjectId: subject.id }))}>

@@ -99,6 +99,70 @@ export async function extractLastFrame(video: Buffer): Promise<Buffer> {
   }
 }
 
+/**
+ * Sample a clip at a fixed rate — the prompting guide's own previz-reading
+ * step ("extract frames at 1 frame per second and step through them"). The
+ * frames go to Claude vision to be turned into a timed camera map.
+ */
+export async function extractFramesAtFps(
+  video: Buffer, fps = 1, maxFrames = 40,
+): Promise<Buffer[]> {
+  const dir = await tmpDir();
+  const inFile = path.join(dir, 'in.mp4');
+  try {
+    await fs.writeFile(inFile, video);
+    await execFileAsync(ffmpeg(), [
+      '-y', '-i', inFile,
+      '-vf', `fps=${fps},scale=640:-2`,
+      '-frames:v', String(maxFrames),
+      '-q:v', '3',
+      path.join(dir, 'f_%03d.png'),
+    ], { maxBuffer: 64 * 1024 * 1024 });
+    const names = (await fs.readdir(dir))
+      .filter((n) => n.startsWith('f_') && n.endsWith('.png'))
+      .sort();
+    return await Promise.all(names.map((n) => fs.readFile(path.join(dir, n))));
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Tile sampled frames into one labelled contact sheet — the whole camera move
+ * as a single image. Cheap to send: reference images are token-free on
+ * ModelArk, unlike reference videos.
+ */
+export async function buildContactSheet(
+  frames: Buffer[], opts: { cols?: number; secondsPerFrame?: number } = {},
+): Promise<Buffer> {
+  if (frames.length === 0) throw new Error('No frames to build a contact sheet from');
+  const cols = Math.min(opts.cols ?? 5, frames.length);
+  const rows = Math.ceil(frames.length / cols);
+  const step = opts.secondsPerFrame ?? 1;
+  const dir = await tmpDir();
+  const out = path.join(dir, 'sheet.png');
+  try {
+    await Promise.all(frames.map((f, i) =>
+      fs.writeFile(path.join(dir, `in_${String(i + 1).padStart(3, '0')}.png`), f)));
+    const grid = `scale=320:-2,pad=iw+4:ih+4:2:2:color=0x111111,tile=${cols}x${rows}`;
+    const stamp = `drawtext=text='%{eif\\:n*${step}\\:d}s':x=10:y=10:fontsize=22:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=5`;
+    const run = (filter: string) => execFileAsync(ffmpeg(), [
+      '-y', '-i', path.join(dir, 'in_%03d.png'),
+      '-vf', filter, '-frames:v', '1', out,
+    ], { maxBuffer: 64 * 1024 * 1024 });
+    try {
+      await run(`${stamp},${grid}`);
+    } catch {
+      // ffmpeg builds without libfreetype have no drawtext — an unlabelled
+      // sheet still reads fine left-to-right.
+      await run(grid);
+    }
+    return await fs.readFile(out);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
 export interface ConcatItem {
   video: Buffer;
   /**

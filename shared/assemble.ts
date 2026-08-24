@@ -16,6 +16,7 @@ import type {
   SubjectDoc, SubjectAngle, SceneDoc, SceneReference, EnvironmentDoc, Briefing,
 } from './types';
 import { anglesForSubject } from './types';
+import { buildCameraPathBlock } from './previz';
 
 // ---------------------------------------------------------------------------
 // Asset prompts (character / product angle images)
@@ -204,16 +205,23 @@ export function resolveReferenceTags(scene: SceneDoc): ResolvedRef[] {
       case 'subject_upload': return 1;
       case 'environment': return 2;
       case 'style': return 3;
+      case 'camera_previz': return 4; // camera reference sits after the look
       case 'bridge_frame': return 0; // first frame ref leads the list
       case 'voice_audio': return 9;
       default: return 5;
     }
   };
   const sorted = [...scene.references].sort((a, b) => orderOf(a) - orderOf(b));
+  // A previz reaches the model as a contact-sheet image or as the clip
+  // itself, depending on the scene's feed mode.
+  const previzIsVideo = scene.previz?.feed === 'attach_video';
   let img = 0; let vid = 0; let aud = 0;
   return sorted.map((r) => {
     const media: 'image' | 'video' | 'audio' =
-      r.kind === 'voice_audio' ? 'audio' : r.kind === 'subject_video' ? 'video' : 'image';
+      r.kind === 'voice_audio' ? 'audio'
+        : r.kind === 'subject_video' ? 'video'
+          : r.kind === 'camera_previz' ? (previzIsVideo ? 'video' : 'image')
+            : 'image';
     const assignedTag = media === 'audio' ? `@audio${++aud}` : media === 'video' ? `@video${++vid}` : `@image${++img}`;
     return { ...r, assignedTag, media };
   });
@@ -308,6 +316,7 @@ export function buildScenePrompt(
     { title: 'Characters and products', kinds: ['subject_video', 'subject_angle', 'subject_upload'] },
     { title: 'Scenes', kinds: ['environment'] },
     { title: 'Colour and light', kinds: ['style'] },
+    { title: 'Camera', kinds: ['camera_previz'] },
     { title: 'Voice', kinds: ['voice_audio'] },
   ];
   const refLines: string[] = [];
@@ -344,8 +353,15 @@ export function buildScenePrompt(
   // [VISUAL STYLE]
   sections.push(`[VISUAL STYLE]\n${scene.visualStyle.trim()}`);
 
-  // [CAMERA AND PERFORMANCE]
-  sections.push(`[CAMERA AND PERFORMANCE]\n${scene.cameraAndPerformance.trim()}`);
+  // [CAMERA AND PERFORMANCE] — when a previz has been rendered and read back,
+  // the measured camera map replaces guesswork about where the camera is at
+  // any moment. It costs nothing to send: it is text, not another reference.
+  const cameraMap = scene.previz?.cameraMap;
+  sections.push([
+    '[CAMERA AND PERFORMANCE]',
+    scene.cameraAndPerformance.trim(),
+    ...(cameraMap && cameraMap.length > 0 ? [buildCameraPathBlock(cameraMap)] : []),
+  ].join('\n'));
 
   // [AUDIO]
   sections.push(`[AUDIO]\n${scene.audio.trim()}`);

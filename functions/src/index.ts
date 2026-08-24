@@ -10,12 +10,13 @@ import {
   runAnalyzeSubjects, runPlanBriefing, runGenerateAngles, runGenerateSingleAngle,
   runGenerateEnvironment, runGenerateVoiceSample, runGenerateScene,
   runRefreshScene, runAssembleFinal, runGenerateScreenTest,
+  runBuildPrevizScript, runIngestPreviz,
 } from './pipeline';
 import type {
   AnalyzeSubjectsRequest, PlanBriefingRequest, GenerateAnglesRequest,
   GenerateAngleImageRequest, GenerateEnvironmentRequest, GenerateSceneRequest,
   AssembleFinalRequest, GenerateVoiceSampleRequest, GenerateScreenTestRequest,
-  PipelineStepResult,
+  BuildPrevizScriptRequest, IngestPrevizRequest, PipelineStepResult,
 } from '../../shared/types';
 
 setGlobalOptions({ region: REGION, maxInstances: 10 });
@@ -87,6 +88,28 @@ export const generateScene = onCall(
 export const refreshScene = onCall(
   { secrets: ALL_SECRETS, timeoutSeconds: 300, memory: '1GiB' },
   wrap<GenerateSceneRequest>(async (uid, d) => runRefreshScene(uid, d.projectId, d.sceneId)),
+);
+
+/**
+ * Build the Blender script for a scene's camera move. Spends nothing — the
+ * user renders it locally and iterates for free before any credits go out.
+ */
+export const buildPrevizScript = onCall(
+  { secrets: ALL_SECRETS, timeoutSeconds: 120, memory: '512MiB' },
+  wrap<BuildPrevizScriptRequest>(async (uid, d) => {
+    const { fileName } = await runBuildPrevizScript(uid, d.projectId, d.sceneId);
+    return `${fileName} ready — download it and run: blender -b -P ${fileName}`;
+  }),
+);
+
+/** Read an uploaded previz back into a timed camera map. */
+export const ingestPreviz = onCall(
+  { secrets: ALL_SECRETS, timeoutSeconds: 540, memory: '1GiB' },
+  wrap<IngestPrevizRequest>(async (uid, d) => {
+    const { windows, warnings } = await runIngestPreviz(uid, d.projectId, d.sceneId);
+    return `Camera map ready — ${windows} window${windows === 1 ? '' : 's'}`
+      + (warnings.length > 0 ? `, ${warnings.length} timing warning${warnings.length === 1 ? '' : 's'}` : '');
+  }),
 );
 
 /** Stitch all scene clips into the final film. */

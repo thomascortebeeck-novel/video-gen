@@ -154,6 +154,40 @@ const StageSchema = z.object({
   cut: z.enum(['CUT', 'NO CUT']),
 });
 
+// --- camera previz ---------------------------------------------------------
+// The move is planned as geometry, not prose: a blocky stand-in set plus a
+// keyframed camera. Deterministic code turns this into a Blender script.
+
+const Vec3 = z.array(z.number()).length(3)
+  .describe('[x, y, z] in metres. Blender axes: +X right, +Y away from the default view, +Z up. The floor is z=0.');
+
+const CameraKeyframeSchema = z.object({
+  t: z.number().describe('seconds from scene start; the first keyframe is t=0'),
+  pos: Vec3.describe('camera position in metres'),
+  lookAt: Vec3.describe('the point the camera is aimed at, in metres'),
+  focalMm: z.number().describe('focal length in mm on a 36mm sensor: 18-24 wide, 35 normal, 50-85 tight'),
+  easing: z.enum(['linear', 'smooth']).optional().describe('linear (default) holds constant speed; smooth only for a deliberate settle'),
+  note: z.string().optional().describe('what happens at this moment: "clears the window glass"'),
+});
+
+const ProxyObjectSchema = z.object({
+  id: z.string(),
+  kind: z.enum(['box', 'cylinder', 'plane', 'figure'])
+    .describe('figure = a blocky stand-in person (use for anyone on screen); plane = floor or a wall; box/cylinder = furniture and props'),
+  label: z.string().describe('what it stands in for: "the man, seated right"'),
+  pos: Vec3.describe('centre position; for a figure standing on the floor, z = size[2] / 2'),
+  size: Vec3.describe('bounding size in metres; an adult figure is about [0.5, 0.3, 1.75]'),
+  rotZdeg: z.number().optional(),
+  subjectId: z.string().optional().describe('set when this block stands in for one of the project subjects'),
+});
+
+const CameraPlanSchema = z.object({
+  durationSec: z.number().describe('MUST equal the scene duration — previz and generation share one clock'),
+  set: z.array(ProxyObjectSchema).describe('the blocky stand-in set: a floor plane, any walls that the camera passes, furniture, and a figure for every person on screen'),
+  camera: z.array(CameraKeyframeSchema).describe('the move in order, starting at t=0; one keyframe per change of direction or speed'),
+  intent: z.string().describe('the move in plain words, start to finish'),
+});
+
 const SceneRefSchema = z.object({
   kind: z.enum(['subject_video', 'subject_angle', 'environment', 'style']),
   subjectId: z.string().optional().describe('required when kind=subject_video (characters) or subject_angle (products)'),
@@ -178,6 +212,12 @@ const SceneSchema = z.object({
   exclusions: z.string(),
   keepConsistent: z.string(),
   references: z.array(SceneRefSchema),
+  cameraComplexity: z.enum(['simple', 'complex'])
+    .describe('"complex" only when the camera does something a sentence cannot pin down — see the CAMERA PREVIZ rules'),
+  previzRecommended: z.boolean().describe('true when this move is worth blocking out in 3D first'),
+  previzReason: z.string().describe('one line: why this move does or does not need previz'),
+  cameraPlan: CameraPlanSchema.optional()
+    .describe('REQUIRED when previzRecommended is true; omit entirely otherwise'),
   stitchMode: z.enum(['hard_cut', 'extend_prev', 'frame_bridge']),
   stitchNotes: z.string(),
 });
@@ -228,7 +268,34 @@ const BriefingPlanSchema = z.object({
 });
 export type BriefingPlan = z.infer<typeof BriefingPlanSchema>;
 
-const directorSystem = (caps: EngineCaps) => `You are a professional film director, cinematographer and editor who plans AI-generated videos for Seedance on Higgsfield. You turn a client's rough idea plus locked character/product sheets into a complete production briefing. Your output is structured JSON; a deterministic assembler renders each scene into Dan Kieft's advanced Seedance 2.5 prompt template:
+const previzSection = (mode: 'off' | 'auto' | 'always'): string => {
+  if (mode === 'off') {
+    return `== CAMERA PREVIZ ==
+Previz is disabled for this project. Still set cameraComplexity honestly, set previzRecommended false for every scene, give previzReason as "previz disabled for this project", and omit cameraPlan.`;
+  }
+  return `== CAMERA PREVIZ ==
+A complex camera move written as prose is a guess, and every guess costs a paid generation to test. So a scene's move can be blocked out in Blender first — a blocky stand-in set with a keyframed camera — rendered for free, and the resulting timed camera map goes into the prompt. Judge every scene.
+
+previzRecommended TRUE when the move is one of:
+- multi-beat: it changes direction or subject two or more times ("push in, turn left onto her, then push past her and turn right onto the reveal")
+- it passes through a threshold — a window, doorway, archway, gap — or between foreground objects
+- a timed reveal: something must come into frame at a specific second
+- the camera must ARRIVE on a specific person at the moment they speak or act
+- an orbit, arc, or crane where the geometry of the path is the point
+
+previzRecommended FALSE for: a locked-off shot, one slow push-in or pull-out, a single pan or tilt, a simple follow, handheld/vlog texture, or any shot where "the camera holds on X" describes it completely. Most scenes are FALSE.${mode === 'always' ? '\nThis project is set to previz every scene: still judge cameraComplexity honestly, but set previzRecommended true and write a cameraPlan for every scene.' : ''}
+
+When previzRecommended is true, write cameraPlan:
+- durationSec EQUALS the scene duration. The previz and the generation share one clock; the camera map is timed against the stages.
+- Build only what the camera can see or pass: a floor plane, the walls it travels through or along, the furniture that frames the shot, and a "figure" for every person on screen. Ten blocks is plenty. This is geometry for the camera, not a set dress.
+- An adult figure is about [0.5, 0.3, 1.75] m standing at z = 0.875. Seated eye level is about 1.2 m, standing about 1.6 m. A room is 2.5-3 m tall. Aim lookAt at a person's HEAD height, not their feet.
+- One keyframe per change of direction or speed — typically 4 to 8 total. The first is t=0 and IS the opening frame of the shot.
+- Keep easing "linear" (constant speed) unless the shot deliberately settles at the end.
+- The keyframe "note" field says what that moment is ("clears the window glass", "settles on the vendor") — those notes become the beat names in the camera map.
+- Time the STAGES against this move: when the camera arrives at a person is when that person acts or speaks. A spoken line runs 2-3 seconds and must sit inside one camera window, never straddling a move.`;
+};
+
+const directorSystem = (caps: EngineCaps, previzMode: 'off' | 'auto' | 'always') => `You are a professional film director, cinematographer and editor who plans AI-generated videos for Seedance on Higgsfield. You turn a client's rough idea plus locked character/product sheets into a complete production briefing. Your output is structured JSON; a deterministic assembler renders each scene into Dan Kieft's advanced Seedance 2.5 prompt template:
 [GOAL] [REFERENCE MATERIAL] [CONTINUITY] [STAGES] [VISUAL STYLE] [CAMERA AND PERFORMANCE] [AUDIO] [EXCLUSIONS] [MAINTAIN CONSISTENCY]
 
 == ACTIVE MODEL FACTS (${caps.label}) ==
@@ -257,6 +324,8 @@ const directorSystem = (caps: EngineCaps) => `You are a professional film direct
 - Camera: only when it matters. One primary camera move per scene, at most two, event-motivated ("the camera begins a slow push-in only after the cup tips"). Formula: movement + direction + speed + subject + framing constraint. For most stages describe action and let the model pick coverage.
 - Dialogue: a spoken line runs 2-3 seconds — count lines against the runtime first. Lines ≤10 words. One speaker per stage. Speech only in dialogue fields, never inside action text. Max ~8s continuous speech per scene block.
 - continuous mode (one long take, e.g. handheld/vlog/phone): use mode "continuous" and write continuousAction as one flowing paragraph including all dialogue in order; stages array stays empty.
+
+${previzSection(previzMode)}
 
 == LANGUAGE THAT BREAKS THINGS (never use) ==
 "chiaroscuro", "monochromatic", "desaturated", "heavy grain", bare "crushed blacks", slow-shutter/step-printing/low-fps concepts. Colour ALWAYS in positive names: "warm amber and deep brown". If light flickers, write it in ("low practical lamplight that flickers slightly and never sits stable").
@@ -333,10 +402,75 @@ export async function planBriefingWithClaude(input: DirectorInput): Promise<Brie
   ].filter(Boolean).join('\n');
 
   return structured({
-    system: directorSystem(caps),
+    system: directorSystem(caps, project.input.previz ?? 'auto'),
     content: [{ type: 'text', text: brief }],
     schema: BriefingPlanSchema,
     schemaName: 'briefing_plan',
     maxTokens: 60000,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 3. Reading a rendered previz back into a timed camera map
+// ---------------------------------------------------------------------------
+
+const CameraMapSchema = z.object({
+  map: z.array(z.object({
+    t0: z.number(),
+    t1: z.number(),
+    move: z.string().describe('plain facing words: "holds the opening angle, slow push in", "pans right onto the man", "travels through the doorway"'),
+  })).describe('contiguous windows covering the whole clip, in order, starting at t0=0'),
+  riskiestMoment: z.string().describe('the single moment of this generation most likely to come out wrong'),
+  fallbackFix: z.string().describe('one line the user can add to the prompt if that moment does come out wrong'),
+});
+export type PrevizCameraMap = z.infer<typeof CameraMapSchema>;
+
+const PREVIZ_READ_SYSTEM = `You are reading a camera previz: a rendered animatic of grey placeholder blocks whose ONLY purpose is to record where a camera goes and when. You are given its frames in order, one per second, starting at 0s.
+
+Never trust a written description of the move over the frames — read the frames and report what the camera actually does.
+
+Write a camera timing map: contiguous windows covering the whole clip, each one window of continuous camera behaviour. Use plain facing words — front angle, holds, slow push in, pans right, descends, travels through, turns left, settles on. No lens jargon, no shot-size names, no interpretation of the blocks as story.
+
+Name what the camera arrives at using the block labels you are given, in story terms ("settles on the vendor"), never "a grey box". Windows must be in order, must start at 0, must not overlap, and the last window must end at the clip duration.
+
+Then flag the single riskiest moment of the eventual video generation and give a one-line fallback fix for it.`;
+
+/**
+ * SKILL step 2 + 5: step through the rendered previz frames and write the
+ * timed camera map that the scene prompt is built against. Reading the actual
+ * frames is the whole point — the map is measured, not imagined.
+ */
+export async function describePrevizWithClaude(opts: {
+  frames: ImageInput[];
+  durationSec: number;
+  sceneTitle: string;
+  intent: string;
+  blockLabels: string[];
+}): Promise<PrevizCameraMap> {
+  const content: Anthropic.Messages.ContentBlockParam[] = [];
+  opts.frames.forEach((img, i) => {
+    content.push({ type: 'text', text: `Frame at ${i}s:` });
+    content.push({
+      type: 'image',
+      source: { type: 'base64', media_type: img.mediaType, data: img.data.toString('base64') },
+    });
+  });
+  content.push({
+    type: 'text',
+    text: [
+      `Scene: ${opts.sceneTitle}`,
+      `Clip duration: ${opts.durationSec} seconds (${opts.frames.length} frames, one per second).`,
+      `What the blocks stand for: ${opts.blockLabels.join('; ') || '(unlabelled)'}`,
+      `The move as planned (verify it against the frames, and report what you actually see): ${opts.intent}`,
+      '',
+      'Write the camera timing map for this clip.',
+    ].join('\n'),
+  });
+  return structured({
+    system: PREVIZ_READ_SYSTEM,
+    content,
+    schema: CameraMapSchema,
+    schemaName: 'camera_map',
+    maxTokens: 4000,
   });
 }
